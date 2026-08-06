@@ -1,0 +1,40 @@
+# Secrets are never templated by this chart. Create them before install:
+#
+#   kubectl -n <ns> create secret generic pullsift-secrets \
+#     --from-literal=WEBHOOK_SECRET=... \
+#     --from-literal=CANARY_SALT=... \
+#     --from-literal=GITHUB_APP_ID=... \
+#     --from-literal=PG_PASSWORD=... \
+#     --from-file=github-app-key.pem=app.pem
+#   kubectl -n <ns> create secret generic pullsift-tunnel \
+#     --from-literal=TUNNEL_TOKEN=...
+
+secretName: pullsift-secrets
+
+app:
+  enabled: true
+  image: ghcr.io/fizzwizzledazzle/pullsift:latest
+  replicas: 1
+
+detector:
+  enabled: true
+  image: ghcr.io/fizzwizzledazzle/pullsift-detector:latest
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      memory: 4Gi
+
+postgres:
+  enabled: true
+  image: postgres:16
+  storage: 10Gi
+  storageClassName: ""
+
+# Webhook ingress without a public load balancer: a Cloudflare Tunnel
+# whose public hostname becomes the GitHub App's webhook URL.
+cloudflared:
+  enabled: false
+  image: cloudflare/cloudflared:latest
+  secretName: pullsift-tunnel

@@ -1,0 +1,65 @@
+{{- if .Values.app.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels: { app.kubernetes.io/name: pullsift }
+spec:
+  replicas: {{ .Values.app.replicas }}
+  selector:
+    matchLabels: { app.kubernetes.io/name: pullsift }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: pullsift }
+    spec:
+      containers:
+        - name: pullsift
+          image: {{ .Values.app.image }}
+          env:
+            - name: WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef: { name: {{ .Values.secretName }}, key: WEBHOOK_SECRET }
+            - name: CANARY_SALT
+              valueFrom:
+                secretKeyRef: { name: {{ .Values.secretName }}, key: CANARY_SALT }
+            - name: GITHUB_APP_ID
+              valueFrom:
+                secretKeyRef: { name: {{ .Values.secretName }}, key: GITHUB_APP_ID }
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ .Values.secretName }}, key: PG_PASSWORD }
+            - name: DATABASE_URL
+              value: postgres://postgres:$(PG_PASSWORD)@{{ .Release.Name }}-postgres:5432/pullsift
+            - name: GITHUB_PRIVATE_KEY_PATH
+              value: /secrets/github-app-key.pem
+            {{- if .Values.detector.enabled }}
+            - name: DETECTOR_URL
+              value: http://{{ .Release.Name }}-detector:9310/
+            {{- end }}
+            - name: BIND_ADDR
+              value: 0.0.0.0:8080
+          volumeMounts:
+            - name: app-key
+              mountPath: /secrets
+              readOnly: true
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+      volumes:
+        - name: app-key
+          secret:
+            secretName: {{ .Values.secretName }}
+            items:
+              - key: github-app-key.pem
+                path: github-app-key.pem
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  selector: { app.kubernetes.io/name: pullsift }
+  ports:
+    - port: 8080
+{{- end }}
