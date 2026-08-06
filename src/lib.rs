@@ -21,4 +21,5 @@ pub mod policy;
 pub mod store;
 pub mod stylometry;
 pub mod textsig;
+pub mod tokenscore;
 pub mod webhook;

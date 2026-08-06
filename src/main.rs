@@ -176,6 +176,29 @@ async fn token(state: &AppState) -> anyhow::Result<String> {
         .await
 }
 
+/// Optional AI-text detector: DETECTOR_URL points at a locally hosted model
+/// server (POST {"text": ...} -> {"probability": 0..1}). Fail-open; a slow
+/// or absent detector never blocks scoring.
+async fn detector_probe(title: &str, body: &str) -> Option<f64> {
+    let url = std::env::var("DETECTOR_URL").ok()?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .ok()?;
+    let resp: serde_json::Value = client
+        .post(&url)
+        .json(&serde_json::json!({ "text": format!("{title}\n{body}") }))
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    resp["probability"]
+        .as_f64()
+        .filter(|p| (0.0..=1.0).contains(p))
+}
+
 async fn score_and_act(state: &AppState, ev: webhook::PrEvent) -> anyhow::Result<()> {
     let now = Utc::now();
     let token = token(state).await?;
@@ -209,6 +232,8 @@ async fn score_and_act(state: &AppState, ev: webhook::PrEvent) -> anyhow::Result
         }
     };
 
+    let detector_score = detector_probe(&ev.title, &ev.body).await;
+
     let inputs = ScoreInputs {
         config: &config,
         event: &ev,
@@ -219,6 +244,7 @@ async fn score_and_act(state: &AppState, ev: webhook::PrEvent) -> anyhow::Result
         dossier: dossier_facts,
         pr_labels: vec![],
         template: template.as_deref(),
+        detector_score,
     };
 
     let outcome = {

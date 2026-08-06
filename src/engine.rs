@@ -86,6 +86,9 @@ pub struct Weights {
     pub bias: f64,
     pub rules: BTreeMap<String, f64>,
     pub thresholds: Thresholds,
+    /// Provenance: corpus size, AUC, fit date. Informational only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<serde_json::Value>,
 }
 
 /// One line of evidence in a verdict: what fired, at what weight, and its
@@ -169,6 +172,7 @@ mod tests {
                 hold: 0.70,
                 close: 0.95,
             },
+            meta: None,
         }
     }
 

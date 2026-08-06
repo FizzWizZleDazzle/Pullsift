@@ -29,8 +29,14 @@ struct PrFixture {
     body: Option<String>,
     user: String,
     additions: u64,
+    #[serde(default)]
+    deletions: u64,
     changed_files: u64,
+    #[serde(default)]
+    commit_count: u64,
     author_association: String,
+    #[serde(default)]
+    head_ref: String,
 }
 
 fn load_pr(dir: &str, n: u64) -> (PrEvent, String) {
@@ -44,9 +50,12 @@ fn load_pr(dir: &str, n: u64) -> (PrEvent, String) {
         title: meta.title,
         body: meta.body.unwrap_or_default(),
         additions: meta.additions,
+        deletions: meta.deletions,
         changed_files: meta.changed_files,
+        commit_count: meta.commit_count,
         author_association: meta.author_association,
         head_is_fork: true,
+        head_ref: meta.head_ref,
         node_id: format!("PR_{n}"),
     };
     (ev, diff)
@@ -91,6 +100,7 @@ fn score(
         dossier,
         pr_labels: vec![],
         template: None,
+        detector_score: None,
     };
     process(
         &inputs,
@@ -210,15 +220,18 @@ fn default_weights_separate_wave_from_ham() {
 }
 
 #[test]
-fn linguist_author_scores_hold_on_arrival() {
+fn linguist_author_flagged_solo_and_held_with_network() {
     // The dossier fixture is what the bot actually sees for this account:
-    // GitHub returns an empty PR connection and blocks search ("users cannot
-    // be searched"), which sets search_blocked.
+    // GitHub returns an empty PR connection and refuses search. Corpus data
+    // showed that opacity alone is a weak signal (it also hits legitimate
+    // accounts), so the solo arrival must carry the evidence without a hard
+    // tier claim; the designed catch for this account class is corroborated
+    // network verdicts, which must reach Hold+.
     let resp: serde_json::Value = serde_json::from_str(&fixture("musvaage_dossier.json")).unwrap();
     let mut facts = parse_dossier("musvaage", &resp, t(0));
     facts.search_blocked = true;
 
-    assert_eq!(facts.prior.len(), 0, "flagged account: history is hidden");
+    assert_eq!(facts.prior.len(), 0, "opaque account: history is hidden");
     assert!(!facts.has_bio);
 
     let cfg = live_config();
@@ -230,14 +243,46 @@ fn linguist_author_scores_hold_on_arrival() {
         title: "add claire support".into(),
         body: fixture_linguist_body(),
         additions: 120,
+        deletions: 0,
         changed_files: 4,
+        commit_count: 3,
         author_association: "NONE".into(),
         head_is_fork: true,
+        head_ref: "claire".into(),
         node_id: "PR_8074".into(),
     };
     let diff = "+Claire:\n+  type: programming\n+  color: \"#009688\"\n\
                 +  extensions:\n+    - \".cl\"\n+  tm_scope: none\n\
                 +  ace_mode: text\n+  language_id: 890123456\n";
+    // Solo arrival: the opacity evidence is on the record.
+    let mut clusters = ClusterStore::new(0.5);
+    let inputs = ScoreInputs {
+        config: &cfg,
+        event: &ev,
+        diff,
+        changed_paths: vec!["lib/linguist/languages.yml".into()],
+        commit_emails: vec![],
+        commit_messages: vec![],
+        dossier: facts.clone(),
+        pr_labels: vec![],
+        template: None,
+        detector_score: None,
+    };
+    let out = process(&inputs, &Weights::default_table(), &mut clusters, "s", t(0));
+    let Outcome::Scored { verdict, .. } = out else {
+        panic!()
+    };
+    assert!(
+        verdict
+            .evidence
+            .iter()
+            .any(|e| e.rule == "ACCOUNT_UNSEARCHABLE"),
+        "opacity must be on the evidence record"
+    );
+
+    // With corroborated network verdicts (three independent repos reported
+    // this author), the same PR holds or closes.
+    facts.network_verdict = 0.85;
     let mut clusters = ClusterStore::new(0.5);
     let inputs = ScoreInputs {
         config: &cfg,
@@ -249,6 +294,7 @@ fn linguist_author_scores_hold_on_arrival() {
         dossier: facts,
         pr_labels: vec![],
         template: None,
+        detector_score: None,
     };
     let out = process(&inputs, &Weights::default_table(), &mut clusters, "s", t(0));
     let Outcome::Scored { verdict, .. } = out else {
@@ -256,11 +302,10 @@ fn linguist_author_scores_hold_on_arrival() {
     };
     assert!(
         verdict.tier >= Tier::Hold,
-        "flagged author must arrive at Hold+, got {:?} at p={:.3}",
+        "network-corroborated author must arrive at Hold+, got {:?} at p={:.3}",
         verdict.tier,
         verdict.probability
     );
-    assert!(verdict.evidence.iter().any(|e| e.rule == "GH_FLAGGED"));
 }
 
 fn fixture_linguist_body() -> String {
@@ -296,9 +341,12 @@ fn linux_mirror_closes_every_pr_by_policy() {
             title: title.to_string(),
             body: "please merge".into(),
             additions: 1,
+            deletions: 0,
             changed_files: 1,
+            commit_count: 1,
             author_association: "NONE".into(),
             head_is_fork: true,
+            head_ref: "patch-1".into(),
             node_id: format!("PR_{i}"),
         };
         let mut clusters = ClusterStore::new(0.5);
@@ -312,6 +360,7 @@ fn linux_mirror_closes_every_pr_by_policy() {
             dossier: DossierFacts::default(),
             pr_labels: vec![],
             template: None,
+            detector_score: None,
         };
         let out = process(&inputs, &Weights::default_table(), &mut clusters, "s", t(0));
         let Outcome::PolicyClose { comment } = out else {

@@ -29,9 +29,12 @@ pub struct PrEvent {
     pub title: String,
     pub body: String,
     pub additions: u64,
+    pub deletions: u64,
     pub changed_files: u64,
+    pub commit_count: u64,
     pub author_association: String,
     pub head_is_fork: bool,
+    pub head_ref: String,
     pub node_id: String,
 }
 
@@ -68,9 +71,12 @@ pub fn parse(event_name: &str, payload: &Value) -> Event {
                 title: pr["title"].as_str().unwrap_or("").to_string(),
                 body: pr["body"].as_str().unwrap_or("").to_string(),
                 additions: pr["additions"].as_u64().unwrap_or(0),
+                deletions: pr["deletions"].as_u64().unwrap_or(0),
                 changed_files: pr["changed_files"].as_u64().unwrap_or(0),
+                commit_count: pr["commits"].as_u64().unwrap_or(0),
                 author_association: pr["author_association"].as_str().unwrap_or("").to_string(),
                 head_is_fork: pr["head"]["repo"]["fork"].as_bool().unwrap_or(false),
+                head_ref: pr["head"]["ref"].as_str().unwrap_or("").to_string(),
                 node_id: pr["node_id"].as_str().unwrap_or("").to_string(),
             })
         }
@@ -140,7 +146,9 @@ mod tests {
                 "changed_files": 1,
                 "author_association": "FIRST_TIME_CONTRIBUTOR",
                 "user": { "login": "newcomer" },
-                "head": { "repo": { "fork": true } }
+                "commits": 1,
+                "deletions": 1,
+                "head": { "ref": "patch-1", "repo": { "fork": true } }
             }
         });
         let Event::PullRequest(pr) = parse("pull_request", &payload) else {
@@ -151,6 +159,9 @@ mod tests {
         assert_eq!(pr.author, "newcomer");
         assert!(pr.head_is_fork);
         assert_eq!(pr.author_association, "FIRST_TIME_CONTRIBUTOR");
+        assert_eq!(pr.head_ref, "patch-1");
+        assert_eq!(pr.commit_count, 1);
+        assert_eq!(pr.deletions, 1);
         assert!(is_scorable_action(&pr.action));
     }
 

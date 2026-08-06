@@ -116,6 +116,7 @@ mod tests {
                 hold: 0.7,
                 close: 0.95,
             },
+            meta: None,
         };
         match p_target {
             Tier::Pass => w.score(&[]),

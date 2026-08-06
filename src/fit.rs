@@ -39,6 +39,11 @@ pub struct FitOptions {
     pub learning_rate: f64,
     pub iterations: usize,
     pub l2: f64,
+    /// Constrain rule weights to be non-negative (projected gradient).
+    /// Every rule is designed as a slop indicator; a negative fitted weight
+    /// means a corpus artifact, and the constraint sends it to zero instead
+    /// of letting it exonerate.
+    pub non_negative: bool,
 }
 
 impl Default for FitOptions {
@@ -47,6 +52,7 @@ impl Default for FitOptions {
             learning_rate: 0.5,
             iterations: 4000,
             l2: 1e-3,
+            non_negative: true,
         }
     }
 }
@@ -93,6 +99,9 @@ pub fn fit(examples: &[Example], opts: &FitOptions) -> Weights {
         for i in 0..dim {
             let grad = gw[i] / total_w + opts.l2 * w[i];
             w[i] -= opts.learning_rate * grad;
+            if opts.non_negative && w[i] < 0.0 {
+                w[i] = 0.0;
+            }
         }
     }
 
@@ -108,6 +117,7 @@ pub fn fit(examples: &[Example], opts: &FitOptions) -> Weights {
             hold: 0.7,
             close: 0.95,
         },
+        meta: None,
     };
     weights.thresholds = thresholds_at_fpr(&weights, examples, 0.05, 0.01, 0.001);
     weights
@@ -282,6 +292,28 @@ mod tests {
         let ex = vec![Example::new(vec![], true)];
         let w = Weights::default_table();
         assert!(auc(&w, &ex).is_nan());
+    }
+
+    #[test]
+    fn non_negative_fit_zeroes_ham_correlated_rules() {
+        // A rule firing mostly on ham would fit negative; the constraint
+        // sends it to zero instead.
+        let mut ex: Vec<Example> = (0..40)
+            .map(|_| Example::new(vec![Fire::hit("AGENT_TRAILER")], true))
+            .collect();
+        ex.extend((0..40).map(|_| Example::new(vec![Fire::hit("LOOKS_INNOCENT")], false)));
+        let w = fit(&ex, &FitOptions::default());
+        assert_eq!(w.rules["LOOKS_INNOCENT"], 0.0);
+        assert!(w.rules["AGENT_TRAILER"] > 1.0);
+        // Unconstrained: the same rule goes negative.
+        let w2 = fit(
+            &ex,
+            &FitOptions {
+                non_negative: false,
+                ..Default::default()
+            },
+        );
+        assert!(w2.rules["LOOKS_INNOCENT"] < -0.5);
     }
 
     #[test]

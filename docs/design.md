@@ -23,13 +23,32 @@ sample weights; maintainer corrections count five times. Negatives must be
 merged PRs from the same repos as the positives, otherwise the model learns
 "is a newcomer" instead of "is slop".
 
-## Lane C: repo policy (`policy.rs`, `config.rs`)
+## Lane C: repo policy and PR shape (`policy.rs`, `config.rs`)
 
 Runs first, costs nothing. The `mirror-no-prs` archetype closes every PR
 with a policy message naming the real contribution channel; the message is
 explicitly not a judgment of the change. Protected-paths and docs-only
 checks inject rules instead of closing. Per-repo config comes from
 `.github/slopcatcher.yml`, defaults conservative, dry-run on.
+
+`shape_rules` adds tells mined from real drive-by and agent PRs:
+
+- BRANCH_DRIVE_BY: the head branch is `patch-N` (GitHub's web editor) or
+  `main`/`master` in a fork.
+- TITLE_UPDATE_FILE and SINGLE_WEB_COMMIT: the web editor's default
+  "Update README.md" title, alone or with exactly one commit.
+- TEMPLATE_UNFILLED: most of the body is still inside the template's HTML
+  comments.
+- BODY_DIFF_MISMATCH: the body claims tests, the diff touches nothing
+  test-shaped.
+- BODY_TO_DIFF_RATIO: an essay body over a trivial diff.
+- WHITESPACE_ONLY (in `diffsig.rs`): added lines carry no alphanumeric
+  content.
+- BEGGING: please-merge/kindly/assign-me phrasing.
+- USERNAME_PATTERN: digit-heavy generated-looking logins.
+
+New rules ship dark (zero weight) and get priced by the tuner before they
+influence verdicts.
 
 ## Lane A: campaign signatures (`diffsig.rs`, `textsig.rs`, `cluster.rs`)
 
@@ -67,9 +86,11 @@ The target property is "no human answers for this PR", measured:
   reply latency, commit-hour entropy flat around the clock.
 - Account shape, at small weights: age, bio, followers, spread of unrelated
   repos.
-- `GH_FLAGGED`: GitHub's own spam systems block search for the account and
-  hide its PR history. Observed live: the flagged account's PR connection
-  comes back empty while its PRs are visible on the web.
+- `ACCOUNT_UNSEARCHABLE`: the search API refuses the account and its PR
+  connection comes back empty while its PRs are visible on the web. This
+  correlates with accounts GitHub has flagged, but corpus data showed it
+  also hits legitimate privacy-opaque contributors, so it carries a weak
+  weight and is priced by the fit like everything else.
 
 Ratios stay silent below minimum sample sizes; a pattern needs data.
 Stylometry (em dashes, unicode punctuation, emoji, non-ASCII, an AI-phrase
@@ -85,6 +106,19 @@ author's own words. The comment carries an invisible markdown-comment
 honeypot instructing automated readers to include a canary token. A human
 reply lifts the hold; the canary or 72 hours of silence closes the PR, with
 reopening one reply away.
+
+## Offline tuning (`src/bin/tune.rs`, `scripts/mine_corpus.py`)
+
+The miner builds a labeled corpus from the live API: label-mined spam and
+invalid PRs (curated by star floor, human non-owner authors, capped per
+repo so one spam farm cannot dominate), the express README flood, agent
+marked PRs both merged and closed-unmerged, and merged PRs from the same
+repos as ham. The tuner replays the corpus through the production
+pipeline in real arrival order, cross-validates with author-grouped folds
+(an author never appears on both sides), fits, and writes the weight
+table with provenance metadata. Rules that never fired in the corpus keep
+their prior weight: no data means the prior stands. Exact metrics live in
+the tune output and the weights file, not here.
 
 ## Learner (`learn.rs`, `store.rs`)
 

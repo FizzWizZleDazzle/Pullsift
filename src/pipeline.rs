@@ -26,6 +26,9 @@ pub struct ScoreInputs<'a> {
     pub dossier: DossierFacts,
     pub pr_labels: Vec<String>,
     pub template: Option<&'a str>,
+    /// Probability from an external/local AI-text detector, when one is
+    /// configured (DETECTOR_URL). Fail-open: absence fires nothing.
+    pub detector_score: Option<f64>,
 }
 
 #[derive(Debug)]
@@ -56,18 +59,31 @@ pub fn process(
     }
 
     // Lane C first: the cheapest lane wins outright.
+    let commit_count = if ev.commit_count > 0 {
+        ev.commit_count
+    } else {
+        inputs.commit_messages.len() as u64
+    };
     let meta = PrMeta {
         author: &ev.author,
+        title: &ev.title,
+        head_ref: &ev.head_ref,
         changed_paths: &inputs.changed_paths,
         is_first_time_contributor: ev.author_association == "FIRST_TIME_CONTRIBUTOR"
             || ev.author_association == "NONE",
         body: &ev.body,
+        additions: ev.additions,
+        deletions: ev.deletions,
+        commit_count,
         template: inputs.template,
     };
     let mut fires: Vec<Fire> = match policy::evaluate(cfg, &meta) {
         PolicyOutcome::CloseByPolicy(comment) => return Outcome::PolicyClose { comment },
         PolicyOutcome::ExtraRules(rules) => rules,
     };
+    if diffsig::whitespace_only(inputs.diff) {
+        fires.push(Fire::hit("WHITESPACE_ONLY"));
+    }
 
     // Lane A: signatures and clustering.
     let prose = format!("{}\n{}", ev.title, ev.body);
@@ -94,6 +110,18 @@ pub fn process(
     dossier.additions = ev.additions;
     fires.extend(dossier.rules());
     fires.extend(style.rules());
+
+    // Learned token model over the prose; a single rule the fit prices.
+    static TOKEN_TABLE: std::sync::OnceLock<crate::tokenscore::TokenTable> =
+        std::sync::OnceLock::new();
+    let table = TOKEN_TABLE.get_or_init(crate::tokenscore::TokenTable::embedded);
+    if let Some(p) = table.score(&prose) {
+        fires.push(Fire::new("BODY_TOKEN_SCORE", p));
+    }
+
+    if let Some(p) = inputs.detector_score {
+        fires.push(Fire::new("DETECTOR_SCORE", p));
+    }
 
     // Score under this repo's thresholds.
     let mut scoped = weights.clone();
@@ -132,9 +160,12 @@ mod tests {
                    in the installation instructions to help new users."
                 .into(),
             additions: 2,
+            deletions: 0,
             changed_files: 1,
+            commit_count: 1,
             author_association: "FIRST_TIME_CONTRIBUTOR".into(),
             head_is_fork: true,
+            head_ref: "my-branch".into(),
             node_id: "PR_x".into(),
         }
     }
@@ -155,6 +186,7 @@ mod tests {
             dossier: DossierFacts::default(),
             pr_labels: vec![],
             template: None,
+            detector_score: None,
         }
     }
 
@@ -275,6 +307,7 @@ mod tests {
                     received_review: true,
                     author_followed_up: false,
                     repo_key: format!("r{i}/x"),
+                    title: format!("feat: thing {i}"),
                 })
                 .collect(),
             restricted_contributions: 10,

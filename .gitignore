@@ -1,3 +1,4 @@
 /target
 *.pem
 .env
+corpus_mining.log

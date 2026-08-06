@@ -71,6 +71,24 @@ pub fn hamming(a: u64, b: u64) -> u32 {
     (a ^ b).count_ones()
 }
 
+/// True when the patch adds lines but none of them carry an alphanumeric
+/// token: pure whitespace or punctuation churn.
+pub fn whitespace_only(patch: &str) -> bool {
+    let mut saw_added = false;
+    for line in patch.lines() {
+        if let Some(rest) = line.strip_prefix('+') {
+            if rest.starts_with("++") {
+                continue;
+            }
+            saw_added = true;
+            if !crate::hashing::tokens(rest).is_empty() {
+                return false;
+            }
+        }
+    }
+    saw_added
+}
+
 /// The four 16-bit bands of a signature, keyed for multi-index lookup.
 pub fn bands(sig: u64) -> [(u8, u16); 4] {
     [
@@ -249,6 +267,15 @@ mod tests {
             let flipped = base ^ (1 << i) ^ (1 << (i + 1)) ^ (1 << ((i + 31) % 64));
             assert!(ix.near(flipped).contains(&id), "missed at flip pattern {i}");
         }
+    }
+
+    #[test]
+    fn whitespace_only_detection() {
+        assert!(whitespace_only("+   \n+ ---\n+ !!!\n"));
+        assert!(whitespace_only("+\n+  \n"));
+        assert!(!whitespace_only("+   \n+real change\n"));
+        assert!(!whitespace_only("")); // no added lines at all
+        assert!(!whitespace_only("-removed only\n"));
     }
 
     #[test]

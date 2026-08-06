@@ -50,6 +50,9 @@ pub struct PriorPr {
     pub author_followed_up: bool,
     /// Topics/language of the repo, for unrelatedness.
     pub repo_key: String,
+    /// PR title, for cross-repo repetition (the Spamtoberfest signal).
+    #[serde(default)]
+    pub title: String,
 }
 
 /// Everything the dossier knows about an author, ready to become rules.
@@ -75,9 +78,10 @@ pub struct DossierFacts {
     pub generation_footer: bool,
     /// Corroborated network verdict strength in [0,1], from federation.
     pub network_verdict: f64,
-    /// GitHub's own spam systems have flagged this account: the search API
-    /// refuses to query it ("users cannot be searched") and the PR
-    /// connection comes back empty despite visible PRs.
+    /// The account is opaque to the API: search refuses it ("users cannot
+    /// be searched") and the PR connection comes back empty despite visible
+    /// PRs. Correlates with GitHub-flagged accounts but also hits some
+    /// legitimate ones.
     pub search_blocked: bool,
 }
 
@@ -180,6 +184,24 @@ impl DossierFacts {
             out.push(Fire::hit("ACCOUNT_OPAQUE"));
         }
 
+        // Same title posted across the author's history: the tutorial-wave
+        // and farm signature (Update README.md, thirty times).
+        if total >= 5 {
+            let mut counts: std::collections::BTreeMap<&str, usize> =
+                std::collections::BTreeMap::new();
+            for p in &self.prior {
+                let t = p.title.trim();
+                if !t.is_empty() {
+                    *counts.entry(t).or_default() += 1;
+                }
+            }
+            if let Some((_, &max)) = counts.iter().max_by_key(|(_, c)| **c) {
+                if max >= 3 {
+                    out.push(Fire::new("DOSSIER_TITLE_REPEAT", max as f64 / total as f64));
+                }
+            }
+        }
+
         // Unrelatedness: many distinct repos, no repetition.
         if total >= 5 {
             let mut keys: Vec<&str> = self.prior.iter().map(|p| p.repo_key.as_str()).collect();
@@ -196,7 +218,12 @@ impl DossierFacts {
         }
 
         if self.search_blocked {
-            out.push(Fire::hit("GH_FLAGGED"));
+            // The account is opaque to the API: search refuses it and the PR
+            // connection comes back empty. Correlates with GitHub-flagged
+            // accounts but also hits legitimate privacy-opaque ones (seen on
+            // a longtime libpcap contributor), so this is a weak signal, not
+            // proof of flagging.
+            out.push(Fire::hit("ACCOUNT_UNSEARCHABLE"));
         }
 
         out
@@ -222,6 +249,7 @@ query($login: String!) {
       nodes {
         state
         merged
+        title
         createdAt
         labels(first: 10) { nodes { name } }
         reviews(first: 1) { totalCount }
@@ -316,6 +344,7 @@ pub fn parse_dossier(login: &str, response: &Value, now: DateTime<Utc>) -> Dossi
                     .as_str()
                     .unwrap_or("")
                     .to_string(),
+                title: pr["title"].as_str().unwrap_or("").to_string(),
             });
         }
     }
@@ -366,6 +395,7 @@ mod tests {
                     received_review: true,
                     author_followed_up: false,
                     repo_key: format!("org{i}/repo{i}"),
+                    title: format!("distinct title {i}"),
                 })
                 .collect(),
             ..Default::default()
@@ -400,6 +430,7 @@ mod tests {
                     received_review: true,
                     author_followed_up: true,
                     repo_key: "same/repo".into(),
+                    title: format!("real change number {i}"),
                 })
                 .collect(),
             ..Default::default()
@@ -473,6 +504,45 @@ mod tests {
             .rules()
             .iter()
             .all(|f| f.rule != "VELOCITY_FORK_TO_PR"));
+    }
+
+    #[test]
+    fn repeated_titles_across_history_fire() {
+        let facts = DossierFacts {
+            prior: (0..8)
+                .map(|i| PriorPr {
+                    title: if i < 6 {
+                        "Update README.md".into()
+                    } else {
+                        format!("fix {i}")
+                    },
+                    repo_key: format!("r{i}/x"),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let rules = facts.rules();
+        let r = rules
+            .iter()
+            .find(|f| f.rule == "DOSSIER_TITLE_REPEAT")
+            .unwrap();
+        assert!((r.value - 0.75).abs() < 1e-9);
+        // Varied titles: silent.
+        let varied = DossierFacts {
+            prior: (0..8)
+                .map(|i| PriorPr {
+                    title: format!("fix issue number {i}"),
+                    repo_key: "same/repo".into(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        assert!(varied
+            .rules()
+            .iter()
+            .all(|f| f.rule != "DOSSIER_TITLE_REPEAT"));
     }
 
     #[test]

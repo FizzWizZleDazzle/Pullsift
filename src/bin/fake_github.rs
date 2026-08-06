@@ -7,7 +7,7 @@
 
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
-use axum::routing::{get, patch, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -84,7 +84,11 @@ async fn pull(
 use axum::response::IntoResponse;
 
 async fn files(Path((_, _, n)): Path<(String, String, u64)>) -> Json<Value> {
-    let name = if is_slop(n) { "README.md" } else { "src/parser.rs" };
+    let name = if is_slop(n) {
+        "README.md"
+    } else {
+        "src/parser.rs"
+    };
     Json(json!([ { "filename": name } ]))
 }
 
@@ -107,7 +111,8 @@ async fn close(
     Path((owner, repo, n)): Path<(String, String, u64)>,
     Json(body): Json<Value>,
 ) -> Json<Value> {
-    calls.push(json!({ "call": "close", "repo": format!("{owner}/{repo}"), "pr": n, "body": body }));
+    calls
+        .push(json!({ "call": "close", "repo": format!("{owner}/{repo}"), "pr": n, "body": body }));
     Json(json!({ "state": "closed" }))
 }
 
@@ -116,7 +121,9 @@ async fn comment(
     Path((owner, repo, n)): Path<(String, String, u64)>,
     Json(body): Json<Value>,
 ) -> Json<Value> {
-    calls.push(json!({ "call": "comment", "repo": format!("{owner}/{repo}"), "pr": n, "body": body }));
+    calls.push(
+        json!({ "call": "comment", "repo": format!("{owner}/{repo}"), "pr": n, "body": body }),
+    );
     Json(json!({ "id": 1 }))
 }
 
@@ -125,7 +132,8 @@ async fn label(
     Path((owner, repo, n)): Path<(String, String, u64)>,
     Json(body): Json<Value>,
 ) -> Json<Value> {
-    calls.push(json!({ "call": "label", "repo": format!("{owner}/{repo}"), "pr": n, "body": body }));
+    calls
+        .push(json!({ "call": "label", "repo": format!("{owner}/{repo}"), "pr": n, "body": body }));
     Json(json!([]))
 }
 
