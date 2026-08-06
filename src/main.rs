@@ -242,7 +242,7 @@ async fn score_and_act(state: &AppState, ev: webhook::PrEvent) -> anyhow::Result
         commit_emails,
         commit_messages,
         dossier: dossier_facts,
-        pr_labels: vec![],
+        pr_labels: ev.labels.clone(),
         template: template.as_deref(),
         detector_score,
     };

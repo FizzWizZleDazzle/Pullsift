@@ -57,6 +57,7 @@ fn load_pr(dir: &str, n: u64) -> (PrEvent, String) {
         head_is_fork: true,
         head_ref: meta.head_ref,
         node_id: format!("PR_{n}"),
+        labels: vec![],
     };
     (ev, diff)
 }
@@ -250,6 +251,7 @@ fn linguist_author_flagged_solo_and_held_with_network() {
         head_is_fork: true,
         head_ref: "claire".into(),
         node_id: "PR_8074".into(),
+        labels: vec![],
     };
     let diff = "+Claire:\n+  type: programming\n+  color: \"#009688\"\n\
                 +  extensions:\n+    - \".cl\"\n+  tm_scope: none\n\
@@ -346,6 +348,7 @@ fn legit_claude_integration_pr_is_not_flagged() {
         head_is_fork: true,
         head_ref: "feat/claude-chat-widget".into(),
         node_id: "PR_512".into(),
+        labels: vec![],
     };
     let diff = "--- a/src/server/proxy.ts\n+++ b/src/server/proxy.ts\n\
                 @@ -1,3 +1,20 @@\n\
@@ -457,6 +460,7 @@ fn linux_mirror_closes_every_pr_by_policy() {
             head_is_fork: true,
             head_ref: "patch-1".into(),
             node_id: format!("PR_{i}"),
+            labels: vec![],
         };
         let mut clusters = ClusterStore::new(0.5);
         let inputs = ScoreInputs {

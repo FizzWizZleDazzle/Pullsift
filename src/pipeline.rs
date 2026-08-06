@@ -167,6 +167,7 @@ mod tests {
             head_is_fork: true,
             head_ref: "my-branch".into(),
             node_id: "PR_x".into(),
+            labels: vec![],
         }
     }
 
@@ -202,6 +203,23 @@ mod tests {
             "s",
             now(0),
         );
+        assert!(matches!(out, Outcome::Exempt));
+    }
+
+    #[test]
+    fn override_label_exempts_the_pr() {
+        // A maintainer's slop-override label must stop all scoring, even
+        // for a PR that would otherwise convict.
+        let cfg = RepoConfig {
+            dry_run: false,
+            ..Default::default()
+        };
+        let ev = event("ghostbot", 1);
+        let mut inp = inputs(&cfg, &ev);
+        inp.commit_emails.push("noreply@anthropic.com".into());
+        inp.pr_labels = vec!["slop-override".into()];
+        let mut clusters = ClusterStore::new(0.5);
+        let out = process(&inp, &Weights::default_table(), &mut clusters, "s", now(0));
         assert!(matches!(out, Outcome::Exempt));
     }
 

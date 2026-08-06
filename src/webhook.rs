@@ -36,6 +36,7 @@ pub struct PrEvent {
     pub head_is_fork: bool,
     pub head_ref: String,
     pub node_id: String,
+    pub labels: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -78,6 +79,15 @@ pub fn parse(event_name: &str, payload: &Value) -> Event {
                 head_is_fork: pr["head"]["repo"]["fork"].as_bool().unwrap_or(false),
                 head_ref: pr["head"]["ref"].as_str().unwrap_or("").to_string(),
                 node_id: pr["node_id"].as_str().unwrap_or("").to_string(),
+                labels: pr["labels"]
+                    .as_array()
+                    .map(|ls| {
+                        ls.iter()
+                            .filter_map(|l| l["name"].as_str())
+                            .map(|s| s.to_string())
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             })
         }
         "issue_comment" => {
@@ -148,6 +158,7 @@ mod tests {
                 "user": { "login": "newcomer" },
                 "commits": 1,
                 "deletions": 1,
+                "labels": [ { "name": "slop-override" } ],
                 "head": { "ref": "patch-1", "repo": { "fork": true } }
             }
         });
@@ -162,6 +173,7 @@ mod tests {
         assert_eq!(pr.head_ref, "patch-1");
         assert_eq!(pr.commit_count, 1);
         assert_eq!(pr.deletions, 1);
+        assert_eq!(pr.labels, vec!["slop-override".to_string()]);
         assert!(is_scorable_action(&pr.action));
     }
 

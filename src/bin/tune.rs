@@ -160,6 +160,7 @@ fn replay(records: &[Record]) -> Vec<Scored> {
             head_is_fork: true,
             head_ref: r.head_ref.clone(),
             node_id: String::new(),
+            labels: vec![],
         };
         let mut facts: DossierFacts = if r.dossier.is_null() {
             DossierFacts::default()
