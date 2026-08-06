@@ -178,9 +178,15 @@ impl DossierFacts {
             }
         }
 
+        // Smooth decay with a 90-day half-life rather than a 30-day cliff:
+        // wave accounts are often months old, created for an earlier
+        // campaign, and a cliff throws that separation away.
         if let Some(age) = self.account_age_days {
-            if age < 30 {
-                out.push(Fire::new("ACCOUNT_NEW", 1.0 - age as f64 / 30.0));
+            if age < 365 {
+                out.push(Fire::new(
+                    "ACCOUNT_NEW",
+                    1.0 / (1.0 + age.max(0) as f64 / 90.0),
+                ));
             }
         }
 
@@ -479,14 +485,25 @@ mod tests {
             .unwrap()
             .value;
         assert_eq!(v0, 1.0);
-        facts.account_age_days = Some(15);
-        let v15 = facts
+        facts.account_age_days = Some(90);
+        let v90 = facts
             .rules()
             .iter()
             .find(|f| f.rule == "ACCOUNT_NEW")
             .unwrap()
             .value;
-        assert!((v15 - 0.5).abs() < 1e-9);
+        assert!((v90 - 0.5).abs() < 1e-9);
+        // A months-old account still reads as somewhat new.
+        facts.account_age_days = Some(300);
+        let v300 = facts
+            .rules()
+            .iter()
+            .find(|f| f.rule == "ACCOUNT_NEW")
+            .unwrap()
+            .value;
+        assert!(v300 > 0.0 && v300 < v90);
+        facts.account_age_days = Some(400);
+        assert!(facts.rules().iter().all(|f| f.rule != "ACCOUNT_NEW"));
     }
 
     #[test]

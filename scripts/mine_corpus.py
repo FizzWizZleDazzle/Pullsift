@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mine a labeled PR corpus from the GitHub API into fixtures/corpus/.
+"""Mine a labeled PR corpus from the GitHub API into bench/corpus/.
 
 Runs on a machine with an authenticated gh CLI. Slop positives are curated:
 closed and unmerged, human author, author is not the repo owner, and the
@@ -23,7 +23,7 @@ WORKERS = 6
 # whole wave is the point.
 REPO_CAP_LABELED = 15
 
-OUT_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "corpus"
+OUT_DIR = Path(__file__).resolve().parent.parent / "bench" / "corpus"
 STAR_FLOOR_LABELED = 100
 STAR_FLOOR_AGENT = 25
 BODY_CAP = 4096
@@ -82,18 +82,25 @@ def gh_api(path, accept=None, ok_statuses=()):
     return r.stdout
 
 
-def search_prs(extra_args, limit):
+def search_prs(extra_args, limit, retries=2):
     fields = "number,repository,author,title,body,createdAt,authorAssociation,state,labels"
-    try:
-        return (
-            gh_json(
-                ["search", "prs", "--limit", str(limit), "--json", fields] + extra_args
+    for attempt in range(retries + 1):
+        try:
+            return (
+                gh_json(
+                    ["search", "prs", "--limit", str(limit), "--json", fields]
+                    + extra_args
+                )
+                or []
             )
-            or []
-        )
-    except RuntimeError as e:
-        print(f"  search failed ({e})", file=sys.stderr)
-        return []
+        except RuntimeError as e:
+            if "rate limit" in str(e).lower() and attempt < retries:
+                print("  search rate limited; sleeping 120s", file=sys.stderr)
+                time.sleep(120)
+                continue
+            print(f"  search failed ({e})", file=sys.stderr)
+            return []
+    return []
 
 
 class Miner:
@@ -124,7 +131,7 @@ class Miner:
             for line in p.read_text().splitlines():
                 try:
                     r = json.loads(line)
-                    if r.get("source", "").startswith("label:") or r.get("source") == "october-invalid":
+                    if r.get("source", "").startswith("label:") or r.get("source") in ("october-invalid", "invalid-window"):
                         self.repo_counts[r["repo"]] = self.repo_counts.get(r["repo"], 0) + 1
                 except (json.JSONDecodeError, KeyError):
                     pass
@@ -185,7 +192,7 @@ class Miner:
     def collect(self, hit, label, source, require_unmerged, star_floor):
         repo = hit["repository"]["nameWithOwner"]
         number = hit["number"]
-        capped = source.startswith("label:") or source == "october-invalid"
+        capped = source.startswith("label:") or source in ("october-invalid", "invalid-window")
         with self.lock:
             if (repo, number) in self.seen:
                 return False
@@ -268,7 +275,7 @@ def main():
     m = Miner()
 
     print("== slop: label-mined", file=sys.stderr)
-    for lbl in ("spam", "invalid", "AI slop"):
+    for lbl in ("spam", "invalid", "AI slop", "hacktoberfest-invalid", "ai-generated", "low quality"):
         hits = search_prs(["--label", lbl, "--state", "closed"], 100)
         time.sleep(2.5)
         m.collect_all(hits, "slop", f"label:{lbl}", True, STAR_FLOOR_LABELED)
@@ -287,16 +294,46 @@ def main():
     time.sleep(2.5)
     m.collect_all(hits, "slop", "october-invalid", True, STAR_FLOOR_LABELED)
 
+    print("== slop: invalid windows", file=sys.stderr)
+    for window in ("2025-11-01..2025-11-30", "2024-10-01..2024-10-31"):
+        hits = search_prs(
+            ["--label", "invalid", "--state", "closed", "--created", window], 80
+        )
+        time.sleep(2.5)
+        m.collect_all(hits, "slop", "invalid-window", True, STAR_FLOOR_LABELED)
+
     print("== slop (weak): agent-marked, closed unmerged", file=sys.stderr)
-    for q in ("Generated with Claude Code", "Generated with openclaw"):
+    for q in (
+        "Generated with Claude Code",
+        "Generated with openclaw",
+        "Co-Authored-By: Claude",
+        "This PR was written by Devin",
+        "Co-authored-by: Cursor Agent",
+    ):
         hits = search_prs([q, "--state", "closed"], 60)
         time.sleep(2.5)
         m.collect_all(hits, "slop", "agent-closed", True, STAR_FLOOR_AGENT)
 
     print("== ham: merged agent-marked", file=sys.stderr)
-    hits = search_prs(["Generated with Claude Code", "--merged"], 60)
-    time.sleep(2.5)
-    m.collect_all(hits, "ham", "agent-merged", False, STAR_FLOOR_AGENT)
+    for q in ("Generated with Claude Code", "Co-Authored-By: Claude"):
+        hits = search_prs([q, "--merged"], 60)
+        time.sleep(2.5)
+        m.collect_all(hits, "ham", "agent-merged", False, STAR_FLOOR_AGENT)
+
+    print("== ham: merged PRs from healthy repos", file=sys.stderr)
+    for repo in (
+        "fastapi/fastapi",
+        "vitejs/vite",
+        "axios/axios",
+        "pallets/flask",
+        "tokio-rs/tokio",
+        "psf/requests",
+        "mui/material-ui",
+        "prettier/prettier",
+    ):
+        hits = search_prs(["--repo", repo, "--merged"], 10)
+        time.sleep(2.5)
+        m.collect_all(hits, "ham", "healthy-merged", False, 0)
 
     print("== ham: merged PRs from the slop repos", file=sys.stderr)
     slop_repos = sorted(

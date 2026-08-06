@@ -2,8 +2,9 @@
 //! and GraphQL surface for the service to run a full webhook-to-action
 //! round, records every mutating call, and dumps the record at `/_calls`.
 //!
-//! PR numbers steer behavior: 900-999 look like agent slop (agent commit
-//! email and trailer), everything else looks like an ordinary contribution.
+//! PR numbers steer behavior: 900-999 look like slop (agent commit email
+//! and trailer, plus a spam-trail author dossier), everything else looks
+//! like an ordinary contribution.
 
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
@@ -156,6 +157,40 @@ async fn graphql(State(calls): State<Calls>, Json(body): Json<Value>) -> Json<Va
         return Json(json!({ "data": { "convertPullRequestToDraft":
             { "pullRequest": { "isDraft": true } } } }));
     }
-    // Dossier query: an account with no visible history.
-    Json(json!({ "data": { "user": null } }))
+    // Dossier query. Slop authors (login starts with "ghost") get the shape
+    // the model convicts on: a young opaque account with a closed-unmerged,
+    // spam-labeled trail it never followed up on. Everyone else has no
+    // visible history.
+    let login = body["variables"]["login"].as_str().unwrap_or("");
+    if !login.starts_with("ghost") {
+        return Json(json!({ "data": { "user": null } }));
+    }
+    let now = chrono::Utc::now();
+    let created = (now - chrono::Duration::days(5)).to_rfc3339();
+    let pr_at = (now - chrono::Duration::days(2)).to_rfc3339();
+    let review_at = (now - chrono::Duration::days(1)).to_rfc3339();
+    let prior: Vec<Value> = (0..6)
+        .map(|i| {
+            json!({
+                "state": "CLOSED",
+                "merged": false,
+                "title": "Update README.md",
+                "createdAt": pr_at,
+                "labels": { "nodes": if i < 3 { json!([{ "name": "spam" }]) } else { json!([]) } },
+                "reviews": { "totalCount": 1 },
+                "comments": { "nodes": [
+                    { "author": { "login": "maintainer" }, "createdAt": review_at }
+                ] },
+                "repository": { "nameWithOwner": format!("org{i}/repo{i}"),
+                                "primaryLanguage": { "name": "Markdown" } }
+            })
+        })
+        .collect();
+    Json(json!({ "data": { "user": {
+        "createdAt": created,
+        "bio": null,
+        "followers": { "totalCount": 0 },
+        "contributionsCollection": { "restrictedContributionsCount": 12 },
+        "pullRequests": { "nodes": prior }
+    } } }))
 }

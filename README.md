@@ -59,6 +59,9 @@ exempt_users: [trusted-bot]
   corrections, and a nightly refit promotes new weights only when held-out
   accuracy does not regress. Every weight version is kept; rollback is one
   row.
+- Ships its training corpus as a public benchmark ([bench/](bench/README.md)):
+  real labeled PRs, a fixed test split, and a scorer any triage bot can
+  report against.
 
 ## Limitations
 

@@ -9,11 +9,8 @@ from pathlib import Path
 
 from mine_corpus import OUT_DIR, REPO_CAP_LABELED
 
-CAPPED_SOURCES = ("label:", "october-invalid")
-
-
 def is_capped(source):
-    return source.startswith("label:") or source == "october-invalid"
+    return source.startswith("label:") or source in ("october-invalid", "invalid-window")
 
 
 def main():

@@ -34,6 +34,8 @@ CREATE TABLE signatures (
     id             BIGSERIAL PRIMARY KEY,
     repo           TEXT NOT NULL,
     pr_number      BIGINT NOT NULL,
+    -- Local only; federation envelopes carry signatures without identity.
+    author         TEXT NOT NULL DEFAULT '',
     arrived        TIMESTAMPTZ NOT NULL,
     simhash        BIGINT,
     pathset_hash   BIGINT NOT NULL,

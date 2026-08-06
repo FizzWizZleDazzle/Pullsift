@@ -72,6 +72,10 @@ squashed to [0,1]. A cluster also carries the stylometry centroid of its
 members; high cohesion binds it tighter. Cluster membership re-enters the
 engine as rules (`CLUSTER_SIZE_LOG`, `CLUSTER_BURST`,
 `CLUSTER_STYLE_COHESION`, `CLUSTER_XREPO`), so there is one scoring path.
+Size, burst, and cohesion require at least two distinct authors in the
+cluster: one person's batch of similar PRs (a docs sweep) is normal work,
+and mined merged batches were the engine's main false-positive source.
+`CLUSTER_XREPO` still fires for a single account spraying repos.
 
 ## Lane B: author dossier (`dossier.rs`, `stylometry.rs`)
 
@@ -119,6 +123,12 @@ pipeline in real arrival order, cross-validates with author-grouped folds
 table with provenance metadata. Rules that never fired in the corpus keep
 their prior weight: no data means the prior stands. Exact metrics live in
 the tune output and the weights file, not here.
+
+The corpus doubles as a public benchmark (`bench/`): a fixed
+author-grouped test split, a prediction format, and a dependency-free
+scorer, so other triage bots can report comparable numbers. `tune --emit`
+writes slopcatcher's own out-of-fold predictions in that format. The
+benchmark contract lives in `bench/README.md`.
 
 ## Learner (`learn.rs`, `store.rs`)
 

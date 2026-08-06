@@ -21,6 +21,9 @@ pub const TTL_SECS: i64 = 14 * 24 * 3600;
 pub struct PrSignature {
     pub repo: String,
     pub pr_number: u64,
+    /// Author login, for counting distinct accounts in a cluster. Local
+    /// only: federation envelopes carry signatures without identity.
+    pub author: String,
     pub arrived: DateTime<Utc>,
     pub diff_sim: Option<u64>,
     pub text_min: Option<MinHash>,
@@ -34,6 +37,7 @@ pub struct ClusterView {
     pub cluster_id: usize,
     pub size: usize,
     pub distinct_repos: usize,
+    pub distinct_authors: usize,
     pub burst: f64,
     pub style_cohesion: f64,
 }
@@ -162,6 +166,13 @@ impl ClusterStore {
         repos.sort_unstable();
         repos.dedup();
         let distinct_repos = repos.len();
+        let mut authors: Vec<&str> = member_ids
+            .iter()
+            .map(|&e| self.entries[e].author.as_str())
+            .collect();
+        authors.sort_unstable();
+        authors.dedup();
+        let distinct_authors = authors.len();
 
         let in_window = member_ids
             .iter()
@@ -179,6 +190,7 @@ impl ClusterStore {
             cluster_id: root,
             size,
             distinct_repos,
+            distinct_authors,
             burst,
             style_cohesion,
         }
@@ -201,19 +213,26 @@ impl ClusterStore {
 }
 
 /// Rules a cluster view contributes to its member PR's score.
+///
+/// Size, burst, and cohesion require at least two distinct authors: a
+/// campaign is many accounts sending the same change, while one person's
+/// own batch of similar PRs (a docs sweep, a maintenance series) is
+/// normal work and belongs to the dossier lane if it is not. A single
+/// account spraying the same change across repos still counts through
+/// `CLUSTER_XREPO`.
 pub fn cluster_rules(view: &ClusterView) -> Vec<Fire> {
     let mut out = Vec::new();
-    if view.size >= 2 {
+    if view.size >= 2 && view.distinct_authors >= 2 {
         let size_val = ((view.size as f64).ln() / (50.0f64).ln()).min(1.0);
         out.push(Fire::new("CLUSTER_SIZE_LOG", size_val));
         out.push(Fire::new("CLUSTER_BURST", view.burst));
         if view.style_cohesion > 0.9 {
             out.push(Fire::new("CLUSTER_STYLE_COHESION", view.style_cohesion));
         }
-        if view.distinct_repos >= 2 {
-            let x = ((view.distinct_repos - 1) as f64 / 9.0).min(1.0);
-            out.push(Fire::new("CLUSTER_XREPO", x));
-        }
+    }
+    if view.size >= 2 && view.distinct_repos >= 2 {
+        let x = ((view.distinct_repos - 1) as f64 / 9.0).min(1.0);
+        out.push(Fire::new("CLUSTER_XREPO", x));
     }
     out
 }
@@ -293,9 +312,22 @@ mod tests {
     }
 
     fn sig(repo: &str, n: u64, minute: i64, patch: &str, body: &str) -> PrSignature {
+        // Distinct author per PR number: the wave shape, many accounts.
+        sig_by(repo, &format!("acct{n}"), n, minute, patch, body)
+    }
+
+    fn sig_by(
+        repo: &str,
+        author: &str,
+        n: u64,
+        minute: i64,
+        patch: &str,
+        body: &str,
+    ) -> PrSignature {
         PrSignature {
             repo: repo.into(),
             pr_number: n,
+            author: author.into(),
             arrived: t(minute),
             diff_sim: diffsig::simhash(patch),
             text_min: minhash(body),
@@ -390,6 +422,53 @@ mod tests {
         let mut store = ClusterStore::new(0.5);
         let v = store.insert(sig("o/r", 1, 0, &readme_patch("really"), WAVE_BODY));
         assert!(cluster_rules(&v).is_empty());
+    }
+
+    #[test]
+    fn single_author_batch_stays_quiet() {
+        // One person's own batch of similar PRs clusters but convicts
+        // nothing: size, burst, and cohesion need at least two accounts.
+        let mut store = ClusterStore::new(0.5);
+        let mut last = None;
+        for i in 0..6 {
+            let v = store.insert(sig_by(
+                "o/r",
+                "docs-team",
+                i,
+                i as i64,
+                &readme_patch("really"),
+                WAVE_BODY,
+            ));
+            last = Some(v);
+        }
+        let v = last.unwrap();
+        assert_eq!(v.size, 6);
+        assert_eq!(v.distinct_authors, 1);
+        assert!(cluster_rules(&v).is_empty());
+    }
+
+    #[test]
+    fn single_author_spray_across_repos_still_fires_xrepo() {
+        let mut store = ClusterStore::new(0.5);
+        store.insert(sig_by(
+            "a/x",
+            "sprayer",
+            1,
+            0,
+            &readme_patch("really"),
+            WAVE_BODY,
+        ));
+        let v = store.insert(sig_by(
+            "b/y",
+            "sprayer",
+            1,
+            1,
+            &readme_patch("really"),
+            WAVE_BODY,
+        ));
+        let rules = cluster_rules(&v);
+        assert!(rules.iter().any(|f| f.rule == "CLUSTER_XREPO"));
+        assert!(rules.iter().all(|f| f.rule == "CLUSTER_XREPO"));
     }
 
     #[test]

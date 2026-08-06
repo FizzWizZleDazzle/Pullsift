@@ -91,6 +91,7 @@ pub fn process(
     let sig = PrSignature {
         repo: ev.repo.clone(),
         pr_number: ev.number,
+        author: ev.author.clone(),
         arrived: now,
         diff_sim: diffsig::simhash(inputs.diff),
         text_min: textsig::minhash(&prose),

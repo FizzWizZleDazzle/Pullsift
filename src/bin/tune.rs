@@ -124,8 +124,10 @@ fn load(dir: &std::path::Path) -> Vec<Record> {
 }
 
 /// Replay all records in arrival order per repo, collecting fires exactly as
-/// production would see them.
-fn replay(records: &[Record]) -> Vec<Scored> {
+/// production would see them. Records the pipeline decides without scoring
+/// come back separately with their effective probability: exempt is 0,
+/// policy close is 1. Benchmark emission needs a score for every record.
+fn replay(records: &[Record]) -> (Vec<Scored>, Vec<(String, bool, f64)>) {
     let cfg = RepoConfig {
         dry_run: false,
         ..Default::default()
@@ -138,6 +140,7 @@ fn replay(records: &[Record]) -> Vec<Scored> {
 
     let mut stores: BTreeMap<String, ClusterStore> = BTreeMap::new();
     let mut out = Vec::new();
+    let mut decided = Vec::new();
     for &i in &order {
         let r = &records[i];
         let now = r
@@ -203,11 +206,15 @@ fn replay(records: &[Record]) -> Vec<Scored> {
                 id: format!("{}#{}", r.repo, r.number),
                 prose: format!("{}\n{}", r.title, r.body),
             }),
-            Outcome::Exempt => {}
-            Outcome::PolicyClose { .. } => {}
+            Outcome::Exempt => {
+                decided.push((format!("{}#{}", r.repo, r.number), r.label == "slop", 0.0))
+            }
+            Outcome::PolicyClose { .. } => {
+                decided.push((format!("{}#{}", r.repo, r.number), r.label == "slop", 1.0))
+            }
         }
     }
-    out
+    (out, decided)
 }
 
 fn fold_of(author: &str) -> u64 {
@@ -217,11 +224,17 @@ fn fold_of(author: &str) -> u64 {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let dry = args.iter().any(|a| a == "--dry");
-    let dir = args
-        .iter()
-        .find(|a| !a.starts_with("--"))
-        .cloned()
-        .unwrap_or_else(|| format!("{}/fixtures/corpus", env!("CARGO_MANIFEST_DIR")));
+    let mut emit: Option<String> = None;
+    let mut dir: Option<String> = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--emit" {
+            emit = it.next().cloned();
+        } else if !a.starts_with("--") {
+            dir = Some(a.clone());
+        }
+    }
+    let dir = dir.unwrap_or_else(|| format!("{}/bench/corpus", env!("CARGO_MANIFEST_DIR")));
 
     let records = load(std::path::Path::new(&dir));
     let n_slop = records.iter().filter(|r| r.label == "slop").count();
@@ -239,14 +252,19 @@ fn main() {
         println!("  {s}: {c}");
     }
 
-    let scored = replay(&records);
-    println!("replayed: {} scored", scored.len());
+    let (scored, decided) = replay(&records);
+    println!(
+        "replayed: {} scored, {} decided without scoring",
+        scored.len(),
+        decided.len()
+    );
 
     // Cross-validation, author-grouped.
     let incumbent = Weights::default_table();
     let mut cv_candidate = Vec::new();
     let mut cv_incumbent = Vec::new();
     let mut oof: Vec<(Example, f64)> = Vec::new(); // out-of-fold: example + candidate prob
+    let mut oof_ids: Vec<String> = Vec::new(); // aligned with oof, for --emit
     for fold in 0..FOLDS {
         let train_s: Vec<&Scored> = scored
             .iter()
@@ -260,16 +278,23 @@ fn main() {
         let table = train_table(&train_s);
         let train = token_examples(&train_s, &table);
         let eval = token_examples(&eval_s, &table);
-        if eval.iter().all(|e| e.is_slop) || eval.iter().all(|e| !e.is_slop) {
-            println!("fold {fold}: single-class eval, skipped");
+        if eval.is_empty() || train.is_empty() {
             continue;
         }
         let cand = fit(&train, &FitOptions::default());
-        cv_candidate.push(auc(&cand, &eval));
-        cv_incumbent.push(auc(&incumbent, &eval));
-        for e in eval {
+        // AUC is undefined on a single-class fold, but the fold's records
+        // still get out-of-fold predictions so benchmark emission covers
+        // every record.
+        if eval.iter().any(|e| e.is_slop) && eval.iter().any(|e| !e.is_slop) {
+            cv_candidate.push(auc(&cand, &eval));
+            cv_incumbent.push(auc(&incumbent, &eval));
+        } else {
+            println!("fold {fold}: single-class eval, AUC skipped");
+        }
+        for (e, s) in eval.into_iter().zip(&eval_s) {
             let p = cand.score(&e.fires).probability;
             oof.push((e, p));
+            oof_ids.push(s.id.clone());
         }
     }
     let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
@@ -293,16 +318,14 @@ fn main() {
     for (rule, w) in &incumbent.rules {
         final_w.rules.entry(rule.clone()).or_insert(*w);
     }
-    // Under-sampled rules keep at least their prior. Provenance markers:
-    // their ham side (merged agent PRs) is under-mined. Cluster rules: the
-    // corpus holds exactly one wave, whose members are also caught by token
-    // and title rules, so correlation starves the cluster weights; a
-    // single-wave corpus cannot price wave mechanics. Revisit both when the
-    // corpus grows.
+    // Under-sampled rules keep at least their prior. Cluster rules: the
+    // corpus holds few genuine multi-account waves, whose members are also
+    // caught by token and title rules, so correlation starves the cluster
+    // weights; the corpus cannot yet price wave mechanics. The provenance
+    // markers (AGENT_*) lost their floors once the corpus gained merged
+    // agent PRs on the ham side: the fit prices them now, and a floor
+    // there forced false positives on accepted agent work.
     for rule in [
-        "AGENT_EMAIL",
-        "AGENT_TRAILER",
-        "GENERATION_FOOTER",
         "CLUSTER_BURST",
         "CLUSTER_SIZE_LOG",
         "CLUSTER_STYLE_COHESION",
@@ -426,6 +449,27 @@ fn main() {
     }
     for (src, (hit, total)) in &per {
         println!("  {src:20} {hit}/{total}");
+    }
+
+    // Benchmark emission: one out-of-fold prediction per scored record
+    // (each from a model that never saw the record's author), plus the
+    // records the pipeline decided without scoring.
+    if let Some(path) = &emit {
+        let mut lines = String::new();
+        for ((_, p), id) in oof.iter().zip(&oof_ids) {
+            lines.push_str(&format!(
+                "{}\n",
+                serde_json::json!({ "id": id, "score": p })
+            ));
+        }
+        for (id, _, p) in &decided {
+            lines.push_str(&format!(
+                "{}\n",
+                serde_json::json!({ "id": id, "score": p })
+            ));
+        }
+        std::fs::write(path, lines).unwrap();
+        println!("\nwrote predictions to {path}");
     }
 
     if dry {

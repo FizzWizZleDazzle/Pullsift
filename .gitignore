@@ -2,3 +2,4 @@
 *.pem
 .env
 corpus_mining.log
+__pycache__/

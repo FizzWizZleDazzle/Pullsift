@@ -15,7 +15,7 @@ cd "$(git rev-parse --show-toplevel)"
 # so deleted files do not linger; keep target/ for incremental builds.
 git ls-files -co --exclude-standard -z | tar --null -czf - -T - |
   kubectl -n offload exec -i "$pod" -- bash -c \
-    "mkdir -p $POD_DIR && cd $POD_DIR && rm -rf src tests weights fixtures migrations scripts docs && tar -xzf -"
+    "mkdir -p $POD_DIR && cd $POD_DIR && rm -rf src tests weights fixtures migrations scripts docs bench && tar -xzf -"
 
 if [ $# -eq 0 ]; then set -- test; fi
 rc=0

@@ -97,6 +97,6 @@ assert any(c["pr"] == 901 for c in closes), f"PR 901 must be closed: {calls}"
 assert not any(c["pr"] == 101 for c in closes), f"PR 101 must not be closed: {closes}"
 assert not any(c["pr"] == 101 for c in comments), f"PR 101 must be untouched: {comments}"
 evidence = [c for c in comments if c["pr"] == 901]
-assert evidence and "AGENT_EMAIL" in json.dumps(evidence), "close comment must carry evidence"
+assert evidence and "DOSSIER_SPAM_LABELS" in json.dumps(evidence), "close comment must carry evidence"
 print("PASS: PR 901 closed with evidence, PR 101 untouched")
 EOF
