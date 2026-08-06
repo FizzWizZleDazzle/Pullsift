@@ -19,18 +19,10 @@ def main():
     )
     args = ap.parse_args()
 
-    for name in ("slop.jsonl", "ham.jsonl"):
-        for line in (args.corpus / name).read_text().splitlines():
-            r = json.loads(line)
-            first = r.get("author_association") in ("FIRST_TIME_CONTRIBUTOR", "NONE")
-            print(
-                json.dumps(
-                    {
-                        "id": f"{r['repo']}#{r['number']}",
-                        "score": 0.9 if first else 0.1,
-                    }
-                )
-            )
+    for line in (args.corpus / "inputs.jsonl").read_text().splitlines():
+        r = json.loads(line)
+        first = r.get("author_association") in ("FIRST_TIME_CONTRIBUTOR", "NONE")
+        print(json.dumps({"id": r["id"], "score": 0.9 if first else 0.1}))
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-//! slopcatcher: cross-repo PR triage.
+//! pullsift: cross-repo PR triage.
 //!
 //! Pure detection logic lives in the modules below and is unit-tested without
 //! any network or database. The service wiring (webhook, GitHub client,
@@ -7,6 +7,7 @@
 pub mod actions;
 pub mod challenge;
 pub mod cluster;
+pub mod codeslop;
 pub mod config;
 pub mod diffsig;
 pub mod dossier;

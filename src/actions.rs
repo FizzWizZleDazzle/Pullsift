@@ -44,7 +44,7 @@ pub fn plan(verdict: &Verdict, challenge_comment: Option<String>, dry_run: bool)
             PlannedAction::None => PlannedAction::None,
             other => PlannedAction::Label {
                 evidence_comment: format!(
-                    "Dry run: slopcatcher would have taken action \
+                    "Dry run: pullsift would have taken action \
                      `{}`.\n\n{}",
                     action_name(&other),
                     evidence_comment(verdict)
@@ -70,7 +70,7 @@ pub fn action_name(a: &PlannedAction) -> &'static str {
 pub fn evidence_comment(verdict: &Verdict) -> String {
     let mut s = String::new();
     s.push_str(&format!(
-        "<details><summary>slopcatcher evidence (probability {:.3})</summary>\n\n",
+        "<details><summary>pullsift evidence (probability {:.3})</summary>\n\n",
         verdict.probability
     ));
     s.push_str("| rule | value | weight | contribution |\n|---|---|---|---|\n");
@@ -91,7 +91,7 @@ fn close_comment(verdict: &Verdict) -> String {
         reasons.push_str(&format!("- {}\n", e.rule));
     }
     format!(
-        "This pull request is closed by slopcatcher because its signals put \
+        "This pull request is closed by pullsift because its signals put \
 it past the review-worthiness threshold this repository configured.\n\n\
 Main signals:\n{reasons}\n\
 If this is a mistake, reply here and a maintainer can reopen it; a reply \

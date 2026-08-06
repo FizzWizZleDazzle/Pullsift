@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 const API: &str = "https://api.github.com";
-const USER_AGENT: &str = "slopcatcher/0.1";
+const USER_AGENT: &str = "pullsift/0.1";
 
 #[derive(Serialize)]
 struct AppClaims {

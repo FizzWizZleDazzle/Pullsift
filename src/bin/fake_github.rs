@@ -139,7 +139,7 @@ async fn label(
 }
 
 async fn contents(Path((_, _, path)): Path<(String, String, String)>) -> axum::response::Response {
-    if path.ends_with("slopcatcher.yml") {
+    if path.ends_with("pullsift.yml") {
         return axum::response::Response::builder()
             .body("dry_run: false\n".to_string().into())
             .unwrap();

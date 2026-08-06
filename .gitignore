@@ -3,3 +3,4 @@
 .env
 corpus_mining.log
 __pycache__/
+*.log

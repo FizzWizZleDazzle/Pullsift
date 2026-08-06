@@ -24,7 +24,7 @@ GITHUB_PRIVATE_KEY_PATH="$DIR/app.pem" \
 GITHUB_INSTALLATION_ID=1 \
 GITHUB_API_BASE="http://$API" \
 BIND_ADDR=$SVC \
-./target/debug/slopcatcher &
+./target/debug/pullsift &
 
 for i in $(seq 1 40); do
   curl -sf "http://$SVC/healthz" >/dev/null 2>&1 && break

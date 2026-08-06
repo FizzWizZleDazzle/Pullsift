@@ -1,9 +1,10 @@
 [package]
-name = "slopcatcher"
+name = "pullsift"
 version = "0.1.0"
 edition = "2021"
 description = "Cross-repo PR triage network: campaign signatures, author dossiers, repo policy"
 license = "MIT"
+repository = "https://github.com/FizzWizZleDazzle/pullsift"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }

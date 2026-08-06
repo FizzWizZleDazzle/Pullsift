@@ -84,6 +84,15 @@ pub fn process(
     if diffsig::whitespace_only(inputs.diff) {
         fires.push(Fire::hit("WHITESPACE_ONLY"));
     }
+    if let Some(density) = diffsig::comment_density(inputs.diff) {
+        if density >= 0.35 {
+            fires.push(Fire::new("COMMENT_HEAVY", density.min(1.0)));
+        }
+    }
+    if grounding_miss(&ev.body, inputs.diff, &inputs.changed_paths) {
+        fires.push(Fire::hit("GROUNDING_MISS"));
+    }
+    fires.extend(crate::codeslop::rules(inputs.diff));
 
     // Lane A: signatures and clustering.
     let prose = format!("{}\n{}", ev.title, ev.body);
@@ -124,8 +133,31 @@ pub fn process(
         fires.push(Fire::new("DETECTOR_SCORE", p));
     }
 
-    // Score under this repo's thresholds.
+    // The repo's AI policy: taste, applied on top of the fitted table.
+    let has_marker = dossier.agent_email || dossier.agent_trailer || dossier.generation_footer;
     let mut scoped = weights.clone();
+    match cfg.ai_policy {
+        crate::config::AiPolicy::Welcome => {
+            for rule in crate::config::RepoConfig::AI_STYLE_RULES {
+                if let Some(w) = scoped.rules.get_mut(*rule) {
+                    *w = 0.0;
+                }
+            }
+        }
+        crate::config::AiPolicy::Neutral => {}
+        crate::config::AiPolicy::Disclose => {
+            if !has_marker && inputs.detector_score.is_some_and(|p| p >= 0.7) {
+                fires.push(Fire::hit("UNDISCLOSED_AI"));
+            }
+        }
+        crate::config::AiPolicy::Forbid => {
+            if has_marker {
+                fires.push(Fire::hit("AI_FORBIDDEN"));
+            }
+        }
+    }
+
+    // Score under this repo's thresholds.
     scoped.thresholds = cfg.thresholds(weights.thresholds);
     let verdict = scoped.score(&fires);
 
@@ -140,8 +172,75 @@ pub fn process(
     Outcome::Scored { verdict, planned }
 }
 
+/// The curl tell: a body that name-drops code the PR never touches.
+/// Collect backticked identifier-shaped mentions (calls, paths, symbols)
+/// from the body; fire only when there are at least two and none of them
+/// appears in the diff or the changed paths. Referencing some unchanged
+/// code is normal engineering prose; referencing only phantoms is
+/// fabrication.
+fn grounding_miss(body: &str, diff: &str, changed_paths: &[String]) -> bool {
+    let mut mentions: Vec<String> = Vec::new();
+    for (i, span) in body.split('`').enumerate() {
+        // Odd indexes are inside backticks.
+        if i % 2 == 0 {
+            continue;
+        }
+        let s = span.trim();
+        if s.len() < 3 || s.len() > 80 || s.contains(char::is_whitespace) {
+            continue;
+        }
+        let identifier_shaped =
+            s.contains('(') || s.contains('/') || s.contains('_') || s.contains("::");
+        if identifier_shaped {
+            let core = s.trim_end_matches("()").trim_matches('`').to_string();
+            if core.len() >= 3 {
+                mentions.push(core);
+            }
+        }
+    }
+    if mentions.len() < 2 {
+        return false;
+    }
+    let paths_lower: Vec<String> = changed_paths.iter().map(|p| p.to_lowercase()).collect();
+    let diff_lower = diff.to_lowercase();
+    !mentions.iter().any(|m| {
+        let m = m.to_lowercase();
+        diff_lower.contains(&m) || paths_lower.iter().any(|p| p.contains(&m) || m.contains(p))
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn grounding_miss_fires_only_on_wholesale_fabrication() {
+        let diff = "+fn unquote(s: &str) -> &str { s }\n";
+        let paths = vec!["src/parser.rs".to_string()];
+        // Fabricated symbols nowhere in the diff or paths.
+        assert!(super::grounding_miss(
+            "Fixes an overflow in `curl_inet_ntop()` and hardens `net/resolve_host()`.",
+            diff,
+            &paths
+        ));
+        // One real mention grounds the body.
+        assert!(!super::grounding_miss(
+            "Adds `unquote()` and simplifies `strip_wrapping()`.",
+            diff,
+            &paths
+        ));
+        // A single identifier mention is not enough to judge.
+        assert!(!super::grounding_miss(
+            "See `phantom_fn()` for context.",
+            diff,
+            &paths
+        ));
+        // Path mentions ground against changed files.
+        assert!(!super::grounding_miss(
+            "Touches `src/parser.rs` and `some/other_thing()`.",
+            diff,
+            &paths
+        ));
+    }
+
     use super::*;
     use crate::config::Archetype;
     use chrono::TimeZone;
@@ -193,6 +292,78 @@ mod tests {
     }
 
     #[test]
+    fn ai_policy_changes_how_markers_score() {
+        let ev = event("someuser", 7);
+        let with_marker = |cfg: &RepoConfig| {
+            let mut inp = inputs(cfg, &ev);
+            inp.dossier = DossierFacts {
+                agent_trailer: true,
+                ..Default::default()
+            };
+            let mut clusters = ClusterStore::new(0.5);
+            match process(&inp, &Weights::default_table(), &mut clusters, "s", now(0)) {
+                Outcome::Scored { verdict, .. } => verdict,
+                _ => panic!("expected scored"),
+            }
+        };
+        let forbid = with_marker(&RepoConfig {
+            ai_policy: crate::config::AiPolicy::Forbid,
+            ..Default::default()
+        });
+        assert!(forbid.evidence.iter().any(|e| e.rule == "AI_FORBIDDEN"));
+        let welcome = with_marker(&RepoConfig {
+            ai_policy: crate::config::AiPolicy::Welcome,
+            ..Default::default()
+        });
+        assert!(welcome.evidence.iter().all(|e| e.rule != "AI_FORBIDDEN"));
+        let trailer_contribution: f64 = welcome
+            .evidence
+            .iter()
+            .filter(|e| e.rule == "AGENT_TRAILER")
+            .map(|e| e.contribution)
+            .sum();
+        assert_eq!(trailer_contribution, 0.0);
+        assert!(forbid.probability > welcome.probability);
+    }
+
+    #[test]
+    fn undisclosed_ai_fires_only_without_markers() {
+        let ev = event("someuser", 8);
+        let cfg = RepoConfig {
+            ai_policy: crate::config::AiPolicy::Disclose,
+            ..Default::default()
+        };
+        let mut inp = inputs(&cfg, &ev);
+        inp.detector_score = Some(0.92);
+        let mut clusters = ClusterStore::new(0.5);
+        let Outcome::Scored { verdict, .. } =
+            process(&inp, &Weights::default_table(), &mut clusters, "s", now(0))
+        else {
+            panic!()
+        };
+        assert!(verdict.evidence.iter().any(|e| e.rule == "UNDISCLOSED_AI"));
+
+        // Disclosed (marker present): no penalty.
+        let mut inp2 = inputs(&cfg, &ev);
+        inp2.detector_score = Some(0.92);
+        inp2.dossier = DossierFacts {
+            generation_footer: true,
+            ..Default::default()
+        };
+        let mut clusters2 = ClusterStore::new(0.5);
+        let Outcome::Scored { verdict, .. } = process(
+            &inp2,
+            &Weights::default_table(),
+            &mut clusters2,
+            "s",
+            now(1),
+        ) else {
+            panic!()
+        };
+        assert!(verdict.evidence.iter().all(|e| e.rule != "UNDISCLOSED_AI"));
+    }
+
+    #[test]
     fn exempt_user_is_untouched() {
         let cfg = RepoConfig::default();
         let ev = event("dependabot[bot]", 1);
@@ -209,7 +380,7 @@ mod tests {
 
     #[test]
     fn override_label_exempts_the_pr() {
-        // A maintainer's slop-override label must stop all scoring, even
+        // A maintainer's pullsift-override label must stop all scoring, even
         // for a PR that would otherwise convict.
         let cfg = RepoConfig {
             dry_run: false,
@@ -218,7 +389,7 @@ mod tests {
         let ev = event("ghostbot", 1);
         let mut inp = inputs(&cfg, &ev);
         inp.commit_emails.push("noreply@anthropic.com".into());
-        inp.pr_labels = vec!["slop-override".into()];
+        inp.pr_labels = vec!["pullsift-override".into()];
         let mut clusters = ClusterStore::new(0.5);
         let out = process(&inp, &Weights::default_table(), &mut clusters, "s", now(0));
         assert!(matches!(out, Outcome::Exempt));

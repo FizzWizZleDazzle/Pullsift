@@ -89,6 +89,43 @@ pub fn whitespace_only(patch: &str) -> bool {
     saw_added
 }
 
+/// Comment share of the added lines, or None below a minimum of ten
+/// nonempty added lines. Generated code over-comments: restate-the-code
+/// comments and section dividers push this ratio up (ICSE 2025 finding;
+/// the fit prices it).
+pub fn comment_density(patch: &str) -> Option<f64> {
+    let mut code = 0u32;
+    let mut comments = 0u32;
+    for line in patch.lines() {
+        let Some(rest) = line.strip_prefix('+') else {
+            continue;
+        };
+        if rest.starts_with("++") {
+            continue;
+        }
+        let t = rest.trim_start();
+        if t.is_empty() {
+            continue;
+        }
+        if t.starts_with("//")
+            || t.starts_with('#')
+            || t.starts_with("/*")
+            || t.starts_with('*')
+            || t.starts_with("--")
+            || t.starts_with("\"\"\"")
+        {
+            comments += 1;
+        } else {
+            code += 1;
+        }
+    }
+    let total = code + comments;
+    if total < 10 {
+        return None;
+    }
+    Some(comments as f64 / total as f64)
+}
+
 /// The four 16-bit bands of a signature, keyed for multi-index lookup.
 pub fn bands(sig: u64) -> [(u8, u16); 4] {
     [
@@ -155,6 +192,19 @@ impl SimhashIndex {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn comment_density_measures_added_lines() {
+        let mut patch = String::from("--- a/x.rs\n+++ b/x.rs\n");
+        for i in 0..8 {
+            patch.push_str(&format!("+// step {i}: initialize the value\n"));
+            patch.push_str(&format!("+let v{i} = {i};\n"));
+        }
+        let d = super::comment_density(&patch).unwrap();
+        assert!((d - 0.5).abs() < 1e-9, "density {d}");
+        // Too few added lines: abstain.
+        assert!(super::comment_density("+// one\n+let a = 1;\n").is_none());
+    }
+
     use super::*;
 
     const PATCH_A: &str = "\

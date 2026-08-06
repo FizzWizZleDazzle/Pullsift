@@ -161,6 +161,42 @@ pub fn shape_rules(pr: &PrMeta) -> Vec<Fire> {
         out.push(Fire::hit("USERNAME_PATTERN"));
     }
 
+    // Agent-workflow branch prefixes (copilot/, codex/, cursor-, ...).
+    // High precision: these are the agents' own naming conventions.
+    let head = pr.head_ref.to_lowercase();
+    if [
+        "copilot", "codex", "cursor", "claude", "jules", "devin", "aider",
+    ]
+    .iter()
+    .any(|a| {
+        head.strip_prefix(a)
+            .is_some_and(|rest| rest.starts_with('/') || rest.starts_with('-'))
+    }) {
+        out.push(Fire::hit("AGENT_BRANCH"));
+    }
+
+    // The agent PR scaffold: Summary/Changes/Testing headings, checkbox
+    // lists, "Test plan". Humans rarely produce all of it unprompted.
+    let scaffold_hits = [
+        "## summary",
+        "## changes",
+        "## test",
+        "### summary",
+        "### changes",
+        "### test",
+        "test plan",
+        "- [x]",
+    ]
+    .iter()
+    .filter(|m| body_lower.contains(*m))
+    .count();
+    if scaffold_hits >= 2 {
+        out.push(Fire::new(
+            "BODY_SCAFFOLD",
+            (scaffold_hits as f64 / 4.0).min(1.0),
+        ));
+    }
+
     out
 }
 
@@ -245,6 +281,40 @@ mod tests {
             commit_count: 2,
             template: None,
         }
+    }
+
+    #[test]
+    fn agent_branch_prefix_fires() {
+        let c = RepoConfig::default();
+        let paths = vec!["src/x.rs".into()];
+        let mut m = meta(&paths, false, "a normal body");
+        m.head_ref = "copilot/add-theme-switcher";
+        let PolicyOutcome::ExtraRules(rules) = evaluate(&c, &m) else {
+            panic!()
+        };
+        assert!(rules.iter().any(|f| f.rule == "AGENT_BRANCH"));
+        // A branch merely containing an agent word does not fire.
+        m.head_ref = "copilotish-feature";
+        let PolicyOutcome::ExtraRules(rules) = evaluate(&c, &m) else {
+            panic!()
+        };
+        assert!(rules.iter().all(|f| f.rule != "AGENT_BRANCH"));
+    }
+
+    #[test]
+    fn scaffold_needs_multiple_markers() {
+        let c = RepoConfig::default();
+        let paths = vec!["src/x.rs".into()];
+        let body = "## Summary\nDoes things.\n## Changes\n- [x] the change\n## Testing\nRan it.";
+        let PolicyOutcome::ExtraRules(rules) = evaluate(&c, &meta(&paths, false, body)) else {
+            panic!()
+        };
+        assert!(rules.iter().any(|f| f.rule == "BODY_SCAFFOLD"));
+        let plain = "Fixes the frobnicator; see issue for context. ## Summary of approach";
+        let PolicyOutcome::ExtraRules(rules) = evaluate(&c, &meta(&paths, false, plain)) else {
+            panic!()
+        };
+        assert!(rules.iter().all(|f| f.rule != "BODY_SCAFFOLD"));
     }
 
     #[test]

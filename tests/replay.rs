@@ -8,14 +8,14 @@
 //! 3. torvalds/linux: a mirror repo closes every PR by policy, unscored.
 
 use chrono::{DateTime, TimeZone, Utc};
-use slopcatcher::actions::PlannedAction;
-use slopcatcher::cluster::ClusterStore;
-use slopcatcher::config::{Archetype, RepoConfig};
-use slopcatcher::dossier::{parse_dossier, DossierFacts};
-use slopcatcher::engine::{Tier, Weights};
-use slopcatcher::fit::{auc, Example};
-use slopcatcher::pipeline::{process, Outcome, ScoreInputs};
-use slopcatcher::webhook::PrEvent;
+use pullsift::actions::PlannedAction;
+use pullsift::cluster::ClusterStore;
+use pullsift::config::{Archetype, RepoConfig};
+use pullsift::dossier::{parse_dossier, DossierFacts};
+use pullsift::engine::{Tier, Weights};
+use pullsift::fit::{auc, Example};
+use pullsift::pipeline::{process, Outcome, ScoreInputs};
+use pullsift::webhook::PrEvent;
 
 fn fixture(path: &str) -> String {
     let p = format!("{}/fixtures/{path}", env!("CARGO_MANIFEST_DIR"));
@@ -195,7 +195,7 @@ fn default_weights_separate_wave_from_ham() {
         let fires = verdict
             .evidence
             .iter()
-            .map(|e| slopcatcher::engine::Fire::new(&e.rule, e.value))
+            .map(|e| pullsift::engine::Fire::new(&e.rule, e.value))
             .collect();
         examples.push(Example::new(fires, true));
     }
@@ -211,7 +211,7 @@ fn default_weights_separate_wave_from_ham() {
         let fires = verdict
             .evidence
             .iter()
-            .map(|e| slopcatcher::engine::Fire::new(&e.rule, e.value))
+            .map(|e| pullsift::engine::Fire::new(&e.rule, e.value))
             .collect();
         examples.push(Example::new(fires, false));
     }
@@ -419,7 +419,7 @@ fn token_model_alone_cannot_reach_enforcement() {
     // past Label on the token rule alone: its fitted weight plus the bias
     // stays below the hold threshold by construction.
     let w = Weights::default_table();
-    let token_only = w.score(&[slopcatcher::engine::Fire::new("BODY_TOKEN_SCORE", 1.0)]);
+    let token_only = w.score(&[pullsift::engine::Fire::new("BODY_TOKEN_SCORE", 1.0)]);
     assert!(
         token_only.tier <= Tier::Label,
         "token score alone reached {:?}",

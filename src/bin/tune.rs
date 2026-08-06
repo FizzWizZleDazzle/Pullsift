@@ -10,15 +10,15 @@
 //! verdicts, challenge outcomes) are not silently zeroed.
 
 use chrono::{DateTime, Utc};
+use pullsift::cluster::ClusterStore;
+use pullsift::config::RepoConfig;
+use pullsift::dossier::{parse_dossier, scan_markers, DossierFacts};
+use pullsift::engine::{Fire, Weights};
+use pullsift::fit::{auc, fit, observed_fpr, thresholds_at_fpr, Example, FitOptions};
+use pullsift::hashing::fnv1a64;
+use pullsift::pipeline::{process, Outcome, ScoreInputs};
+use pullsift::webhook::PrEvent;
 use serde::Deserialize;
-use slopcatcher::cluster::ClusterStore;
-use slopcatcher::config::RepoConfig;
-use slopcatcher::dossier::{parse_dossier, scan_markers, DossierFacts};
-use slopcatcher::engine::{Fire, Weights};
-use slopcatcher::fit::{auc, fit, observed_fpr, thresholds_at_fpr, Example, FitOptions};
-use slopcatcher::hashing::fnv1a64;
-use slopcatcher::pipeline::{process, Outcome, ScoreInputs};
-use slopcatcher::webhook::PrEvent;
 use std::collections::BTreeMap;
 
 const FOLDS: u64 = 5;
@@ -79,7 +79,7 @@ struct Scored {
 /// evidence is stripped of any BODY_TOKEN_SCORE first (the embedded table
 /// may be non-empty on re-runs), so the fold's own table is the only token
 /// signal and cross-validation stays leak-free.
-fn token_examples(scored: &[&Scored], table: &slopcatcher::tokenscore::TokenTable) -> Vec<Example> {
+fn token_examples(scored: &[&Scored], table: &pullsift::tokenscore::TokenTable) -> Vec<Example> {
     scored
         .iter()
         .map(|s| {
@@ -97,12 +97,12 @@ fn token_examples(scored: &[&Scored], table: &slopcatcher::tokenscore::TokenTabl
         .collect()
 }
 
-fn train_table(scored: &[&Scored]) -> slopcatcher::tokenscore::TokenTable {
+fn train_table(scored: &[&Scored]) -> pullsift::tokenscore::TokenTable {
     let docs: Vec<(String, bool)> = scored
         .iter()
         .map(|s| (s.prose.clone(), s.is_slop))
         .collect();
-    slopcatcher::tokenscore::TokenTable::train(&docs)
+    pullsift::tokenscore::TokenTable::train(&docs)
 }
 
 fn load(dir: &std::path::Path) -> Vec<Record> {
@@ -123,11 +123,31 @@ fn load(dir: &std::path::Path) -> Vec<Record> {
     out
 }
 
+/// Load the optional detector sidecar (`detector.jsonl`): offline scores
+/// from the self-hosted AI-text detector, keyed by `repo#number`.
+fn load_detector(dir: &std::path::Path) -> BTreeMap<String, f64> {
+    let mut out = BTreeMap::new();
+    let Ok(text) = std::fs::read_to_string(dir.join("detector.jsonl")) else {
+        return out;
+    };
+    for line in text.lines() {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            if let (Some(id), Some(p)) = (v["id"].as_str(), v["probability"].as_f64()) {
+                out.insert(id.to_string(), p);
+            }
+        }
+    }
+    out
+}
+
 /// Replay all records in arrival order per repo, collecting fires exactly as
 /// production would see them. Records the pipeline decides without scoring
 /// come back separately with their effective probability: exempt is 0,
 /// policy close is 1. Benchmark emission needs a score for every record.
-fn replay(records: &[Record]) -> (Vec<Scored>, Vec<(String, bool, f64)>) {
+fn replay(
+    records: &[Record],
+    detector: &BTreeMap<String, f64>,
+) -> (Vec<Scored>, Vec<(String, bool, f64)>) {
     let cfg = RepoConfig {
         dry_run: false,
         ..Default::default()
@@ -188,7 +208,7 @@ fn replay(records: &[Record]) -> (Vec<Scored>, Vec<(String, bool, f64)>) {
             dossier: facts,
             pr_labels: vec![],
             template: None,
-            detector_score: None,
+            detector_score: detector.get(&format!("{}#{}", r.repo, r.number)).copied(),
         };
         let store = stores
             .entry(r.repo.clone())
@@ -224,6 +244,7 @@ fn fold_of(author: &str) -> u64 {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let dry = args.iter().any(|a| a == "--dry");
+    let score_only = args.iter().any(|a| a == "--score-only");
     let mut emit: Option<String> = None;
     let mut dir: Option<String> = None;
     let mut it = args.iter();
@@ -234,7 +255,7 @@ fn main() {
             dir = Some(a.clone());
         }
     }
-    let dir = dir.unwrap_or_else(|| format!("{}/bench/corpus", env!("CARGO_MANIFEST_DIR")));
+    let dir = dir.unwrap_or_else(|| format!("{}/bench/corpus/archive", env!("CARGO_MANIFEST_DIR")));
 
     let records = load(std::path::Path::new(&dir));
     let n_slop = records.iter().filter(|r| r.label == "slop").count();
@@ -252,12 +273,43 @@ fn main() {
         println!("  {s}: {c}");
     }
 
-    let (scored, decided) = replay(&records);
+    let detector = load_detector(std::path::Path::new(&dir));
+    println!("detector sidecar: {} scores", detector.len());
+    let (scored, decided) = replay(&records, &detector);
     println!(
         "replayed: {} scored, {} decided without scoring",
         scored.len(),
         decided.len()
     );
+
+    // --score-only: evaluate the shipped weight table on this corpus and
+    // emit predictions; fit nothing. For held-out secondary corpora.
+    if score_only {
+        let table = Weights::default_table();
+        let refs: Vec<&Scored> = scored.iter().collect();
+        let examples = token_examples(&refs, &pullsift::tokenscore::TokenTable::embedded());
+        let a = auc(&table, &examples);
+        println!("score-only AUC with shipped weights: {a:.4}");
+        if let Some(path) = &emit {
+            let mut lines = String::new();
+            for (ex, s) in examples.iter().zip(&refs) {
+                let p = table.score(&ex.fires).probability;
+                lines.push_str(&format!(
+                    "{}\n",
+                    serde_json::json!({ "id": s.id, "score": p })
+                ));
+            }
+            for (id, _, p) in &decided {
+                lines.push_str(&format!(
+                    "{}\n",
+                    serde_json::json!({ "id": id, "score": p })
+                ));
+            }
+            std::fs::write(path, lines).unwrap();
+            println!("wrote predictions to {path}");
+        }
+        return;
+    }
 
     // Cross-validation, author-grouped.
     let incumbent = Weights::default_table();
@@ -364,7 +416,7 @@ fn main() {
     let label = cut(0.05);
     let hold = cut(0.01).max(label + 1e-9);
     let close = cut(0.001).max(hold + 1e-9);
-    final_w.thresholds = slopcatcher::engine::Thresholds { label, hold, close };
+    final_w.thresholds = pullsift::engine::Thresholds { label, hold, close };
     println!(
         "in-sample thresholds would have been: label {:.4} hold {:.4} close {:.4}",
         in_sample.label, in_sample.hold, in_sample.close

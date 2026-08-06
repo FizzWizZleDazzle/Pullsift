@@ -1,4 +1,4 @@
-# slopcatcher design
+# pullsift design
 
 The scoring core, the three detection lanes, the challenge, the learner,
 and the federation formats. Code references are the authority; this doc
@@ -29,7 +29,17 @@ Runs first, costs nothing. The `mirror-no-prs` archetype closes every PR
 with a policy message naming the real contribution channel; the message is
 explicitly not a judgment of the change. Protected-paths and docs-only
 checks inject rules instead of closing. Per-repo config comes from
-`.github/slopcatcher.yml`, defaults conservative, dry-run on.
+`.github/pullsift.yml`, defaults conservative, dry-run on.
+
+`ai_policy` encodes the repo's stance on AI assistance, which is
+maintainer taste and therefore config rather than a fitted weight:
+`welcome` zeroes the AI-provenance and AI-style rules (the dossier,
+cluster, and grounding lanes still score), `neutral` leaves the fitted
+table alone, `disclose` adds an UNDISCLOSED_AI rule when the detector
+fires with no provenance markers, and `forbid` adds AI_FORBIDDEN when
+any marker is present. The policy rules carry priors, not fitted
+weights, and policy overrides intentionally trade the calibrated FPR
+targets for the maintainer's explicit choice.
 
 `shape_rules` adds tells mined from real drive-by and agent PRs:
 
@@ -46,9 +56,28 @@ checks inject rules instead of closing. Per-repo config comes from
   content.
 - BEGGING: please-merge/kindly/assign-me phrasing.
 - USERNAME_PATTERN: digit-heavy generated-looking logins.
+- AGENT_BRANCH: agent-workflow branch prefixes (`copilot/`, `codex/`,
+  `cursor-`, and peers).
+- BODY_SCAFFOLD: the agent PR template (Summary/Changes/Testing
+  headings, checkbox lists) in force.
+- COMMENT_HEAVY (in `diffsig.rs`): generated code over-comments; the
+  comment share of added lines, when there are enough of them.
+- GROUNDING_MISS (in `pipeline.rs`): the body name-drops identifiers or
+  paths, at least two, and none exists in the diff or changed files.
+  Fabricated symbols are the highest-precision content tell reported by
+  maintainers fighting AI slop.
 
 New rules ship dark (zero weight) and get priced by the tuner before they
 influence verdicts.
+
+An optional self-hosted AI-text detector (`scripts/detector_server.py`,
+DeBERTa-based, MIT-licensed weights) feeds a single DETECTOR_SCORE rule
+via `DETECTOR_URL`. It scores only the prose of title and body, with
+code, links, and template scaffolding stripped, and abstains under fifty
+words: below that, and on non-native-English writing, detector scores
+are noise, so the rule carries one fitted weight and can never reach an
+enforcement tier alone. `scripts/detector_batch.py` writes the same
+scores as a corpus sidecar so the tuner prices the rule on data.
 
 ## Lane A: campaign signatures (`diffsig.rs`, `textsig.rs`, `cluster.rs`)
 
@@ -127,12 +156,12 @@ the tune output and the weights file, not here.
 The corpus doubles as a public benchmark (`bench/`): a fixed
 author-grouped test split, a prediction format, and a dependency-free
 scorer, so other triage bots can report comparable numbers. `tune --emit`
-writes slopcatcher's own out-of-fold predictions in that format. The
+writes pullsift's own out-of-fold predictions in that format. The
 benchmark contract lives in `bench/README.md`.
 
 ## Learner (`learn.rs`, `store.rs`)
 
-Maintainer actions on scored PRs become labels; overrides of slopcatcher
+Maintainer actions on scored PRs become labels; overrides of pullsift
 actions are corrections at five-fold weight. A nightly batch job refits and
 promotes only behind guardrails: minimum corpus size, both classes present
 in both splits, and held-out AUC within 0.005 of the incumbent. Promotion

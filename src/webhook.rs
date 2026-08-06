@@ -158,7 +158,7 @@ mod tests {
                 "user": { "login": "newcomer" },
                 "commits": 1,
                 "deletions": 1,
-                "labels": [ { "name": "slop-override" } ],
+                "labels": [ { "name": "pullsift-override" } ],
                 "head": { "ref": "patch-1", "repo": { "fork": true } }
             }
         });
@@ -173,7 +173,7 @@ mod tests {
         assert_eq!(pr.head_ref, "patch-1");
         assert_eq!(pr.commit_count, 1);
         assert_eq!(pr.deletions, 1);
-        assert_eq!(pr.labels, vec!["slop-override".to_string()]);
+        assert_eq!(pr.labels, vec!["pullsift-override".to_string()]);
         assert!(is_scorable_action(&pr.action));
     }
 

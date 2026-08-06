@@ -6,16 +6,16 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::Router;
 use chrono::Utc;
-use slopcatcher::actions::{action_name, PlannedAction, SUSPECT_LABEL};
-use slopcatcher::challenge::{self, ChallengeState};
-use slopcatcher::cluster::ClusterStore;
-use slopcatcher::config::RepoConfig;
-use slopcatcher::dossier;
-use slopcatcher::engine::Weights;
-use slopcatcher::github::{app_jwt, Client};
-use slopcatcher::pipeline::{self, Outcome, ScoreInputs};
-use slopcatcher::store::{PgStore, Store};
-use slopcatcher::webhook::{self, Event};
+use pullsift::actions::{action_name, PlannedAction, SUSPECT_LABEL};
+use pullsift::challenge::{self, ChallengeState};
+use pullsift::cluster::ClusterStore;
+use pullsift::config::RepoConfig;
+use pullsift::dossier;
+use pullsift::engine::Weights;
+use pullsift::github::{app_jwt, Client};
+use pullsift::pipeline::{self, Outcome, ScoreInputs};
+use pullsift::store::{PgStore, Store};
+use pullsift::webhook::{self, Event};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
@@ -26,7 +26,9 @@ struct AppState {
     canary_salt: String,
     app_id: String,
     private_key_pem: String,
-    installation_id: u64,
+    /// Single-install override for dev and e2e; live installs carry their
+    /// id in every webhook payload.
+    fallback_installation_id: Option<u64>,
     github: Client,
     store: PgStore,
     weights: RwLock<Weights>,
@@ -65,7 +67,9 @@ async fn main() -> anyhow::Result<()> {
         canary_salt: env("CANARY_SALT")?,
         app_id: env("GITHUB_APP_ID")?,
         private_key_pem: std::fs::read_to_string(env("GITHUB_PRIVATE_KEY_PATH")?)?,
-        installation_id: env("GITHUB_INSTALLATION_ID")?.parse()?,
+        fallback_installation_id: std::env::var("GITHUB_INSTALLATION_ID")
+            .ok()
+            .and_then(|v| v.parse().ok()),
         // GITHUB_API_BASE overrides the API host; the e2e harness points it
         // at the fake server.
         github: match std::env::var("GITHUB_API_BASE") {
@@ -107,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
 async fn run_learner(state: &AppState) -> anyhow::Result<()> {
     let examples = state.store.load_examples().await?;
     let incumbent = state.weights.read().await.clone();
-    let outcome = slopcatcher::learn::learn(&examples, &incumbent);
+    let outcome = pullsift::learn::learn(&examples, &incumbent);
     info!("learner: {}", outcome.reason);
     if let (true, Some(w)) = (outcome.promoted, outcome.weights) {
         state
@@ -155,25 +159,31 @@ async fn dispatch(
     event: Event,
     payload: serde_json::Value,
 ) -> anyhow::Result<()> {
+    let installation = payload["installation"]["id"]
+        .as_u64()
+        .or(state.fallback_installation_id);
     match event {
         Event::PullRequest(ev) if webhook::is_scorable_action(&ev.action) => {
             state
                 .store
                 .record_event(&ev.repo, ev.number, &ev.author, &ev.action, &payload)
                 .await?;
-            score_and_act(state, ev).await
+            let inst = installation
+                .ok_or_else(|| anyhow::anyhow!("webhook carried no installation id"))?;
+            score_and_act(state, ev, inst).await
         }
-        Event::Comment(c) if c.on_pull_request => handle_reply(state, c).await,
+        Event::Comment(c) if c.on_pull_request => {
+            let inst = installation
+                .ok_or_else(|| anyhow::anyhow!("webhook carried no installation id"))?;
+            handle_reply(state, c, inst).await
+        }
         _ => Ok(()),
     }
 }
 
-async fn token(state: &AppState) -> anyhow::Result<String> {
+async fn token(state: &AppState, installation_id: u64) -> anyhow::Result<String> {
     let jwt = app_jwt(&state.app_id, &state.private_key_pem)?;
-    state
-        .github
-        .installation_token(&jwt, state.installation_id)
-        .await
+    state.github.installation_token(&jwt, installation_id).await
 }
 
 /// Optional AI-text detector: DETECTOR_URL points at a locally hosted model
@@ -199,14 +209,18 @@ async fn detector_probe(title: &str, body: &str) -> Option<f64> {
         .filter(|p| (0.0..=1.0).contains(p))
 }
 
-async fn score_and_act(state: &AppState, ev: webhook::PrEvent) -> anyhow::Result<()> {
+async fn score_and_act(
+    state: &AppState,
+    ev: webhook::PrEvent,
+    installation_id: u64,
+) -> anyhow::Result<()> {
     let now = Utc::now();
-    let token = token(state).await?;
+    let token = token(state, installation_id).await?;
     let gh = &state.github;
 
-    let config = match gh.file(&token, &ev.repo, ".github/slopcatcher.yml").await? {
+    let config = match gh.file(&token, &ev.repo, ".github/pullsift.yml").await? {
         Some(yaml) => RepoConfig::parse(&yaml).unwrap_or_else(|e| {
-            warn!("{}: bad slopcatcher.yml ({e}); using defaults", ev.repo);
+            warn!("{}: bad pullsift.yml ({e}); using defaults", ev.repo);
             RepoConfig::default()
         }),
         None => RepoConfig::default(),
@@ -363,7 +377,11 @@ async fn execute(
 }
 
 /// Author replies on held PRs resolve pending challenges.
-async fn handle_reply(state: &AppState, c: webhook::CommentEvent) -> anyhow::Result<()> {
+async fn handle_reply(
+    state: &AppState,
+    c: webhook::CommentEvent,
+    installation_id: u64,
+) -> anyhow::Result<()> {
     let Some(pending) = state.store.get_challenge(&c.repo, c.issue_number).await? else {
         return Ok(());
     };
@@ -375,7 +393,7 @@ async fn handle_reply(state: &AppState, c: webhook::CommentEvent) -> anyhow::Res
         .store
         .put_challenge(&c.repo, c.issue_number, &next)
         .await?;
-    let token = token(state).await?;
+    let token = token(state, installation_id).await?;
     match &next {
         ChallengeState::FailedCanary => {
             let msg = "The reply to the review-readiness check included the \

@@ -1,0 +1,152 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pullsift
+---
+# Secrets are created out of band; this manifest names what must exist:
+#   kubectl -n pullsift create secret generic pullsift-secrets \
+#     --from-literal=WEBHOOK_SECRET=... \
+#     --from-literal=CANARY_SALT=... \
+#     --from-literal=GITHUB_APP_ID=... \
+#     --from-literal=PG_PASSWORD=... \
+#     --from-file=github-app-key.pem=path/to/app.pem
+#   kubectl -n pullsift create secret generic cloudflared-token \
+#     --from-literal=TUNNEL_TOKEN=...
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: pullsift
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector: { matchLabels: { app: postgres } }
+  template:
+    metadata: { labels: { app: postgres } }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          env:
+            - name: POSTGRES_DB
+              value: pullsift
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: pullsift-secrets, key: PG_PASSWORD }
+          ports: [{ containerPort: 5432 }]
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 10Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: pullsift
+spec:
+  selector: { app: postgres }
+  ports: [{ port: 5432 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: detector
+  namespace: pullsift
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: detector } }
+  template:
+    metadata: { labels: { app: detector } }
+    spec:
+      containers:
+        - name: detector
+          image: ghcr.io/fizzwizzledazzle/pullsift-detector:latest
+          ports: [{ containerPort: 9310 }]
+          resources:
+            requests: { cpu: "1", memory: 2Gi }
+            limits: { memory: 4Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: detector
+  namespace: pullsift
+spec:
+  selector: { app: detector }
+  ports: [{ port: 9310 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pullsift
+  namespace: pullsift
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: pullsift } }
+  template:
+    metadata: { labels: { app: pullsift } }
+    spec:
+      containers:
+        - name: pullsift
+          image: ghcr.io/fizzwizzledazzle/pullsift:latest
+          envFrom:
+            - secretRef: { name: pullsift-secrets }
+          env:
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: pullsift-secrets, key: PG_PASSWORD }
+            - name: DATABASE_URL
+              value: postgres://postgres:$(PG_PASSWORD)@postgres:5432/pullsift
+            - name: GITHUB_PRIVATE_KEY_PATH
+              value: /secrets/github-app-key.pem
+            - name: DETECTOR_URL
+              value: http://detector:9310/
+            - name: BIND_ADDR
+              value: 0.0.0.0:8080
+          volumeMounts:
+            - { name: app-key, mountPath: /secrets, readOnly: true }
+          ports: [{ containerPort: 8080 }]
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+      volumes:
+        - name: app-key
+          secret:
+            secretName: pullsift-secrets
+            items:
+              - { key: github-app-key.pem, path: github-app-key.pem }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pullsift
+  namespace: pullsift
+spec:
+  selector: { app: pullsift }
+  ports: [{ port: 8080 }]
+---
+# Webhook ingress without a public load balancer: a Cloudflare Tunnel
+# pointing at the pullsift service. The tunnel's public hostname becomes
+# the GitHub App's webhook URL.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared
+  namespace: pullsift
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: cloudflared } }
+  template:
+    metadata: { labels: { app: cloudflared } }
+    spec:
+      containers:
+        - name: cloudflared
+          image: cloudflare/cloudflared:latest
+          args: ["tunnel", "--no-autoupdate", "run"]
+          env:
+            - name: TUNNEL_TOKEN
+              valueFrom:
+                secretKeyRef: { name: cloudflared-token, key: TUNNEL_TOKEN }

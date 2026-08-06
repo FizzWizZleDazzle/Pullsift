@@ -1,0 +1,27 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: score the shipped baselines against the corpus
+        run: |
+          python3 bench/baselines/first_timer.py > /tmp/ft.jsonl
+          python3 bench/score.py /tmp/ft.jsonl
+          python3 bench/baselines/account_age.py > /tmp/age.jsonl
+          python3 bench/score.py /tmp/age.jsonl

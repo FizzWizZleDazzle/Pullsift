@@ -1,4 +1,4 @@
-//! Per-repo configuration, read from `.github/slopcatcher.yml` in the
+//! Per-repo configuration, read from `.github/pullsift.yml` in the
 //! default branch. Everything has a conservative default; dry-run is on
 //! until a maintainer turns it off.
 
@@ -12,12 +12,33 @@ pub enum Archetype {
     MirrorNoPrs,
 }
 
+/// How this repo feels about AI involvement in contributions. This is a
+/// maintainer's taste, not a fact the fit can learn, so it is config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiPolicy {
+    /// AI-assisted work is fine here. Provenance markers and AI-style
+    /// signals carry no weight; only no-human-behind-it signals count.
+    Welcome,
+    /// Fitted weights as-is: markers count for whatever the data says.
+    #[default]
+    Neutral,
+    /// AI assistance is fine when disclosed. Undisclosed likely-AI prose
+    /// (detector fires, no markers) is penalized.
+    Disclose,
+    /// The repo does not accept AI-generated PRs; any provenance marker
+    /// escalates.
+    Forbid,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RepoConfig {
     /// Log and annotate only; take no enforcement action.
     pub dry_run: bool,
     pub archetype: Option<Archetype>,
+    /// The repo's stance on AI-assisted contributions.
+    pub ai_policy: AiPolicy,
     /// Where contributions actually go, quoted in policy closes.
     pub contribution_channel: Option<String>,
     /// Paths that first-time contributors have no business touching alone.
@@ -39,6 +60,7 @@ impl Default for RepoConfig {
         Self {
             dry_run: true,
             archetype: None,
+            ai_policy: AiPolicy::default(),
             contribution_channel: None,
             protected_paths: vec![
                 "README.md".into(),
@@ -52,7 +74,7 @@ impl Default for RepoConfig {
                 "renovate[bot]".into(),
                 "github-actions[bot]".into(),
             ],
-            exempt_labels: vec!["slop-override".into()],
+            exempt_labels: vec!["pullsift-override".into()],
             threshold_label: None,
             threshold_hold: None,
             threshold_close: None,
@@ -73,6 +95,19 @@ impl RepoConfig {
                 .iter()
                 .any(|l| self.exempt_labels.iter().any(|e| e.eq_ignore_ascii_case(l)))
     }
+
+    /// Rules that say "AI touched this", as opposed to "nobody answers
+    /// for this". Under `ai-policy: welcome` these carry no weight.
+    pub const AI_STYLE_RULES: &[&'static str] = &[
+        "AGENT_EMAIL",
+        "AGENT_TRAILER",
+        "GENERATION_FOOTER",
+        "AGENT_BRANCH",
+        "BODY_SCAFFOLD",
+        "DETECTOR_SCORE",
+        "COMMENT_HEAVY",
+        "STYLE_AI_PHRASES",
+    ];
 
     /// Apply per-repo threshold overrides onto fitted thresholds.
     pub fn thresholds(&self, fitted: crate::engine::Thresholds) -> crate::engine::Thresholds {
@@ -144,7 +179,7 @@ mod tests {
         let c = RepoConfig::default();
         assert!(c.is_exempt("dependabot[bot]", &[]));
         assert!(c.is_exempt("Dependabot[bot]", &[]));
-        assert!(c.is_exempt("anyone", &["slop-override".into()]));
+        assert!(c.is_exempt("anyone", &["pullsift-override".into()]));
         assert!(!c.is_exempt("stranger", &["bug".into()]));
     }
 

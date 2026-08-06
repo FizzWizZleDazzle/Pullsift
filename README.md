@@ -1,4 +1,4 @@
-# slopcatcher
+# pullsift
 
 A GitHub App that decides whether a pull request is worth a maintainer's
 first look, and keeps the ones that are not out of the review queue.
@@ -10,7 +10,7 @@ submissions with no human behind them, tutorial floods where hundreds of
 new accounts send near-identical changes, drive-by accounts with a trail of
 closed-as-invalid PRs elsewhere, and PRs against repos that accept none.
 Existing tools score one PR or one account per repo, in isolation.
-slopcatcher is built around sharing: repos in the network exchange campaign
+pullsift is built around sharing: repos in the network exchange campaign
 signatures and corroborated author verdicts, so the first repo hit by a wave
 inoculates the rest.
 
@@ -30,7 +30,7 @@ cargo run --release
 
 Point the App's webhook at `/webhook` with `pull_request` and
 `issue_comment` events. Per-repo settings live in
-`.github/slopcatcher.yml`; every install starts in dry-run, which annotates
+`.github/pullsift.yml`; every install starts in dry-run, which annotates
 what it would have done without acting.
 
 ```yaml
@@ -38,7 +38,15 @@ dry_run: false
 challenge: true
 contribution_channel: "the mailing list"
 exempt_users: [trusted-bot]
+ai_policy: neutral
 ```
+
+`ai_policy` sets the repo's stance on AI-assisted contributions, because
+that is taste, not fact: `welcome` (AI involvement carries no weight;
+only nobody-answers-for-this signals count), `neutral` (the default:
+markers count for what the data says), `disclose` (AI is fine when
+disclosed; undisclosed likely-AI prose is penalized), or `forbid` (any
+provenance marker escalates).
 
 ## What it does
 
@@ -68,9 +76,11 @@ exempt_users: [trusted-bot]
 - Federation between installations is designed and tested but not yet
   switched on; each install currently learns alone.
 - The dossier reads only public GitHub data, and GitHub hides the history
-  of accounts its own spam systems flag; slopcatcher treats that flag
+  of accounts its own spam systems flag; pullsift treats that flag
   itself as a signal.
-- Tier thresholds are calibrated on a small replay corpus so far; treat
+- Tier thresholds are calibrated on a mined corpus of real PRs; treat
   close-tier automation as opt-in until your repo has feedback history.
+- The App is not yet listed on the GitHub Marketplace; running it today
+  means registering your own GitHub App and pointing it at a deployment.
 
 Deeper design: [docs/design.md](docs/design.md).
