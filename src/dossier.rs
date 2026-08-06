@@ -101,14 +101,19 @@ pub fn scan_markers(
             l.starts_with("co-authored-by:") && AGENT_TRAILER_NAMES.iter().any(|n| l.contains(n))
         })
     });
-    let body = pr_body.to_lowercase();
-    let footer = GENERATION_FOOTERS.iter().any(|f| body.contains(f))
-        || commit_messages.iter().any(|m| {
-            GENERATION_FOOTERS
-                .iter()
-                .any(|f| m.to_lowercase().contains(f))
-        });
+    // Footers are provenance only when they stand as their own line, the
+    // way generators emit them. A PR *about* an AI tool ("the examples were
+    // generated with Claude") mentions the phrase mid-sentence and must not
+    // fire.
+    let footer = has_footer_line(pr_body) || commit_messages.iter().any(|m| has_footer_line(m));
     (email, trailer, footer)
+}
+
+fn has_footer_line(text: &str) -> bool {
+    text.to_lowercase().lines().any(|l| {
+        let l = l.trim();
+        GENERATION_FOOTERS.iter().any(|f| l.starts_with(f))
+    })
 }
 
 impl DossierFacts {
@@ -559,6 +564,27 @@ mod tests {
             "plain body",
         );
         assert!(!e && !t && !f);
+    }
+
+    #[test]
+    fn mentioning_an_ai_tool_is_not_provenance() {
+        // A PR about Claude: the phrases appear mid-sentence, not as
+        // standalone footer lines. None of the markers may fire.
+        let body = "Add a Claude API client.\n\
+                    The demo screenshots were generated with Claude to show \
+                    sample completions.\n\
+                    Docs explain how responses generated with Claude Code \
+                    style prompts differ.";
+        let (e, t, f) = scan_markers(
+            &["dev@example.com".into()],
+            &["feat: add claude api client with retry handling".into()],
+            body,
+        );
+        assert!(!e && !t && !f, "topic mentions must not read as provenance");
+        // The real footer, standing on its own line, still fires.
+        let with_footer = format!("{body}\n\n\u{1f916} Generated with Claude Code");
+        let (_, _, f) = scan_markers(&[], &[], &with_footer);
+        assert!(f);
     }
 
     #[test]

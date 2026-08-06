@@ -316,6 +316,115 @@ fn fixture_linguist_body() -> String {
 }
 
 #[test]
+fn legit_claude_integration_pr_is_not_flagged() {
+    // A genuine feature PR that is *about* Claude: mentions the model and
+    // the API throughout, from a first-time contributor. Topic vocabulary
+    // must not read as slop; the PR must pass untouched under the fitted
+    // weights, and never reach enforcement tiers.
+    let cfg = live_config();
+    let ev = PrEvent {
+        action: "opened".into(),
+        repo: "acme/website".into(),
+        number: 512,
+        author: "jane-builds".into(),
+        title: "feat: add Claude API chat widget to the docs site".into(),
+        body: "Adds a support chat widget backed by the Claude API.\n\n\
+               The client calls the Messages API with claude-sonnet-5 and \
+               streams responses into the widget. API keys load from the \
+               CLAUDE_API_KEY environment variable and never reach the \
+               browser; requests go through a small proxy route.\n\n\
+               Sample transcripts in the docs were generated with Claude \
+               and are marked as examples.\n\n\
+               Tested with the mock server in tests/chat_proxy.rs and \
+               manually against the live API."
+            .into(),
+        additions: 340,
+        deletions: 12,
+        changed_files: 6,
+        commit_count: 4,
+        author_association: "FIRST_TIME_CONTRIBUTOR".into(),
+        head_is_fork: true,
+        head_ref: "feat/claude-chat-widget".into(),
+        node_id: "PR_512".into(),
+    };
+    let diff = "--- a/src/server/proxy.ts\n+++ b/src/server/proxy.ts\n\
+                @@ -1,3 +1,20 @@\n\
+                +export async function chatProxy(req: Request): Promise<Response> {\n\
+                +  const key = process.env.CLAUDE_API_KEY;\n\
+                +  const upstream = await fetch('https://api.anthropic.com/v1/messages', {\n\
+                +    method: 'POST',\n\
+                +    headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },\n\
+                +    body: JSON.stringify({ model: 'claude-sonnet-5', stream: true }),\n\
+                +  });\n\
+                +  return new Response(upstream.body);\n\
+                +}\n";
+    let changed = vec![
+        "src/server/proxy.ts".into(),
+        "src/widget/Chat.tsx".into(),
+        "tests/chat_proxy.rs".into(),
+        "docs/chat.md".into(),
+    ];
+    let mut clusters = ClusterStore::new(0.5);
+    let inputs = ScoreInputs {
+        config: &cfg,
+        event: &ev,
+        diff,
+        changed_paths: changed,
+        commit_emails: vec!["jane@builds.dev".into()],
+        commit_messages: vec![
+            "feat: add chat proxy route for the claude api".into(),
+            "feat: stream responses into the widget".into(),
+            "test: mock server coverage for the proxy".into(),
+            "docs: chat widget setup, examples generated with claude".into(),
+        ],
+        dossier: DossierFacts::default(),
+        pr_labels: vec![],
+        template: None,
+        detector_score: None,
+    };
+    let out = process(&inputs, &Weights::default_table(), &mut clusters, "s", t(0));
+    let Outcome::Scored { verdict, planned } = out else {
+        panic!()
+    };
+    // No provenance marker may fire from topic mentions.
+    for rule in ["AGENT_EMAIL", "AGENT_TRAILER", "GENERATION_FOOTER"] {
+        assert!(
+            verdict.evidence.iter().all(|e| e.rule != rule),
+            "{rule} fired on a topic mention: {:?}",
+            verdict.evidence
+        );
+    }
+    assert_eq!(
+        verdict.tier,
+        Tier::Pass,
+        "legit Claude-topic PR must pass, got {:?} at p={:.3} with {:?}",
+        verdict.tier,
+        verdict.probability,
+        verdict
+            .evidence
+            .iter()
+            .filter(|e| e.contribution > 0.1)
+            .map(|e| e.rule.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(planned, PlannedAction::None);
+}
+
+#[test]
+fn token_model_alone_cannot_reach_enforcement() {
+    // Even a body saturated with learned slop vocabulary cannot push a PR
+    // past Label on the token rule alone: its fitted weight plus the bias
+    // stays below the hold threshold by construction.
+    let w = Weights::default_table();
+    let token_only = w.score(&[slopcatcher::engine::Fire::new("BODY_TOKEN_SCORE", 1.0)]);
+    assert!(
+        token_only.tier <= Tier::Label,
+        "token score alone reached {:?}",
+        token_only.tier
+    );
+}
+
+#[test]
 fn linux_mirror_closes_every_pr_by_policy() {
     let cfg = RepoConfig {
         dry_run: false,
