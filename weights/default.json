@@ -1,0 +1,40 @@
+{
+  "bias": -4.0,
+  "rules": {
+    "AGENT_EMAIL": 3.5,
+    "AGENT_TRAILER": 3.0,
+    "GENERATION_FOOTER": 2.5,
+    "CANARY_EATEN": 8.0,
+    "CHALLENGE_TIMEOUT": 5.0,
+    "DOSSIER_ABANDONMENT": 4.0,
+    "DOSSIER_CLOSED_RATIO": 2.0,
+    "DOSSIER_SPAM_LABELS": 3.0,
+    "VELOCITY_FORK_TO_PR": 2.5,
+    "REPLY_INSTANT": 2.0,
+    "HOUR_ENTROPY_FLAT": 1.5,
+    "ACCOUNT_NEW": 0.8,
+    "ACCOUNT_OPAQUE": 0.7,
+    "UNRELATED_SPREAD": 1.2,
+    "NETWORK_AUTHOR_VERDICT": 4.0,
+    "GH_FLAGGED": 5.0,
+    "CLUSTER_SIZE_LOG": 3.0,
+    "CLUSTER_BURST": 4.0,
+    "CLUSTER_STYLE_COHESION": 1.5,
+    "CLUSTER_XREPO": 3.0,
+    "PROTECTED_PATH_ONLY": 2.0,
+    "DOCS_ONLY": 0.8,
+    "STYLE_EM_DASH": 1.0,
+    "STYLE_UNICODE_PUNCT": 0.8,
+    "STYLE_EMOJI": 0.8,
+    "STYLE_NONASCII": 0.6,
+    "STYLE_AI_PHRASES": 1.2,
+    "STYLE_STRUCTURE": 0.8,
+    "BODY_EMPTY": 0.6,
+    "TEMPLATE_IGNORED": 0.8
+  },
+  "thresholds": {
+    "label": 0.3,
+    "hold": 0.7,
+    "close": 0.95
+  }
+}

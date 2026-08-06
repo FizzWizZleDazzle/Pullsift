@@ -1,0 +1,92 @@
+diff --git a/History.md b/History.md
+index 9e6ee903f40..8a4293ab547 100644
+--- a/History.md
++++ b/History.md
+@@ -9,6 +9,16 @@
+ 
+ ## 🚀 Improvements
+ 
++* Allow conditional revalidation for QUERY requests. `req.fresh` previously only validated freshness for GET and HEAD requests, so QUERY responses never returned 304 despite a matching validator. Since QUERY is a safe, idempotent, and cacheable method that supports conditional requests, it is now included in the freshness check - by [@Cherry](https://github.com/Cherry) in [#7366](https://github.com/expressjs/express/pull/7366)
++
++    ```js
++    // QUERY /reports with If-None-Match: "12345"
++    app.query('/reports', (req, res) => {
++      res.set('ETag', '"12345"');
++      res.send(results); // now responds 304 Not Modified
++    });
++    ```
++
+ * Improve HTML structure in `res.redirect()` responses when HTML format is accepted by adding `<!DOCTYPE html>`, `<title>`, and `<body>` tags for better browser compatibility - by [@Bernice55231](https://github.com/Bernice55231) in [#5167](https://github.com/expressjs/express/pull/5167)
+ 
+ * When calling `app.render` with options set to null, the locals object is handled correctly, preventing unexpected errors and making the method behave the same as when options is omitted or an empty object is passed - by [AkaHarshit](https://github.com/AkaHarshit) in [#6903](https://github.com/expressjs/express/pull/6903)
+diff --git a/lib/request.js b/lib/request.js
+index 68243f52b6d..1eb7f9ca16a 100644
+--- a/lib/request.js
++++ b/lib/request.js
+@@ -471,8 +471,8 @@ defineGetter(req, 'fresh', function(){
+   var res = this.res
+   var status = res.statusCode
+ 
+-  // GET or HEAD for weak freshness validation only
+-  if ('GET' !== method && 'HEAD' !== method) return false;
++  // GET, HEAD, or QUERY for weak freshness validation only
++  if ('GET' !== method && 'HEAD' !== method && 'QUERY' !== method) return false;
+ 
+   // 2xx or 304 as per rfc2616 14.26
+   if ((status >= 200 && status < 300) || 304 === status) {
+diff --git a/test/req.fresh.js b/test/req.fresh.js
+index 3bf6a1f65a7..318a651633f 100644
+--- a/test/req.fresh.js
++++ b/test/req.fresh.js
+@@ -2,6 +2,7 @@
+ 
+ var express = require('../')
+   , request = require('supertest');
++var shouldSkipQuery = require('./support/utils').shouldSkipQuery
+ 
+ describe('req', function(){
+   describe('.fresh', function(){
+@@ -47,6 +48,43 @@ describe('req', function(){
+       .expect(200, 'false', done);
+     })
+ 
++    it('should return true for a QUERY request with a body when the resource is not modified', function(done){
++      if (shouldSkipQuery(process.versions.node)) {
++        this.skip()
++      }
++      var app = express();
++      var etag = '"12345"';
++
++      app.use(function(req, res){
++        res.set('ETag', etag);
++        res.send(req.fresh);
++      });
++
++      request(app)
++      .query('/')
++      .set('If-None-Match', etag)
++      .send({ ids: ['a', 'b'] })
++      .expect(304, done);
++    })
++
++    it('should return false for a QUERY request with a body when the resource is modified', function(done){
++      if (shouldSkipQuery(process.versions.node)) {
++        this.skip()
++      }
++      var app = express();
++
++      app.use(function(req, res){
++        res.set('ETag', '"123"');
++        res.send(req.fresh);
++      });
++
++      request(app)
++      .query('/')
++      .set('If-None-Match', '"12345"')
++      .send({ ids: ['a', 'b'] })
++      .expect(200, 'false', done);
++    })
++
+     it('should ignore "If-Modified-Since" when "If-None-Match" is present', function(done) {
+       var app = express();
+       const etag = '"FooBar"'

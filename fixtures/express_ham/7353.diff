@@ -1,0 +1,13 @@
+diff --git a/package.json b/package.json
+index f1ab51d0265..80bff0ad8a4 100644
+--- a/package.json
++++ b/package.json
+@@ -73,7 +73,7 @@
+     "marked": "^15.0.3",
+     "method-override": "3.0.0",
+     "mocha": "^11.7.5",
+-    "morgan": "1.10.1",
++    "morgan": "1.11.0",
+     "nyc": "^17.1.0",
+     "pbkdf2-password": "1.2.1",
+     "supertest": "^6.3.0",

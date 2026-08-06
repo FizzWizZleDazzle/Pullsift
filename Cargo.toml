@@ -1,0 +1,33 @@
+[package]
+name = "slopcatcher"
+version = "0.1.0"
+edition = "2021"
+description = "Cross-repo PR triage network: campaign signatures, author dossiers, repo policy"
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+hmac = "0.12"
+sha2 = "0.10"
+subtle = "2"
+hex = "0.4"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+jsonwebtoken = "9"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "migrate", "macros"] }
+ed25519-dalek = { version = "2", features = ["serde"] }
+getrandom = "0.3"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+
+[profile.release]
+lto = "thin"
