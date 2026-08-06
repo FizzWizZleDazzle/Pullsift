@@ -66,7 +66,12 @@ async fn main() -> anyhow::Result<()> {
         app_id: env("GITHUB_APP_ID")?,
         private_key_pem: std::fs::read_to_string(env("GITHUB_PRIVATE_KEY_PATH")?)?,
         installation_id: env("GITHUB_INSTALLATION_ID")?.parse()?,
-        github: Client::new(),
+        // GITHUB_API_BASE overrides the API host; the e2e harness points it
+        // at the fake server.
+        github: match std::env::var("GITHUB_API_BASE") {
+            Ok(base) => Client::with_base(&base),
+            Err(_) => Client::new(),
+        },
         store,
         weights: RwLock::new(weights),
         clusters: Mutex::new(HashMap::new()),
