@@ -48,6 +48,20 @@
   th { font-weight: 600; font-size: .85rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
   td.num { font-variant-numeric: tabular-nums; }
   .note { color: var(--muted); font-size: .9rem; }
+  .chart { margin: 1.25rem 0; }
+  .row { display: flex; align-items: center; gap: .75rem; margin: .5rem 0; }
+  .who { flex: 0 0 8.5rem; font-size: .9rem; }
+  .track {
+    flex: 1 1 auto; height: 1.4rem; background: var(--code-bg);
+    border: 1px solid var(--line); border-radius: 4px; overflow: hidden;
+  }
+  .track i { display: block; height: 100%; background: var(--muted); }
+  .track i.me { background: var(--accent); }
+  .val { flex: 0 0 3.6rem; text-align: right; font-variant-numeric: tabular-nums; font-size: .9rem; }
+  @media (max-width: 30rem) {
+    .who { flex-basis: 6rem; font-size: .8rem; }
+    .val { flex-basis: 3rem; font-size: .8rem; }
+  }
   footer { margin: 4rem 0 3rem; padding-top: 1.5rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .9rem; }
   .cta { display: inline-block; margin: .5rem .5rem .5rem 0; padding: .55rem 1.1rem; border: 1px solid var(--line); border-radius: 8px; text-decoration: none; }
 </style>
@@ -120,21 +134,27 @@ a fixed author-held-out test split, and a scorer with no dependencies.</p>
 <p>The headline metric is recall on AI-generated slop at a one percent
 false-positive budget. Human farming is a solved detection problem; machine
 output that reads like work is not.</p>
-<div class="table-scroll">
-<table>
-  <thead><tr><th>Reference bot</th><th>Approach</th><th class="num">AUC</th></tr></thead>
-  <tbody>
-    <tr><td>Pullsift</td><td>Fitted rule engine, out of fold</td><td class="num">see results</td></tr>
-    <tr><td>First-timer flag</td><td>Flag every new contributor</td><td class="num">0.92</td></tr>
-    <tr><td>Account age</td><td>Younger account, higher score</td><td class="num">0.62</td></tr>
-  </tbody>
-</table>
+<div class="chart">
+  <div class="row">
+    <span class="who">Pullsift</span>
+    <span class="track"><i style="width:24.8%" class="me"></i></span>
+    <span class="val">24.8%</span>
+  </div>
+  <div class="row">
+    <span class="who">Account age</span>
+    <span class="track"><i style="width:12.1%"></i></span>
+    <span class="val">12.1%</span>
+  </div>
+  <div class="row">
+    <span class="who">First-timer flag</span>
+    <span class="track"><i style="width:0.6%"></i></span>
+    <span class="val">0.0%</span>
+  </div>
 </div>
-<p class="note">Numbers are pinned to a corpus revision by fingerprint; the
-current figures live in the repository. The baselines are shipped so a new bot
-has something honest to beat, and the first-timer baseline is deliberately
-included as a warning: it scores well here partly because of a documented leak
-in the data, which the benchmark states rather than hides.</p>
+<p class="note">Slop caught at a one percent false-positive budget, on the
+held-out split, scored out of fold. Numbers are pinned to a corpus revision by
+fingerprint. The baselines ship with the corpus so a new bot has something
+honest to beat. <a href="/bench/">Full results and method</a>.</p>
 
 <h2>Install</h2>
 <p>Point the App at a repository and leave dry run on for a week. Read what it

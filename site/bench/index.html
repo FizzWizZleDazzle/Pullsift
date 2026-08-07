@@ -55,6 +55,21 @@
   th { font-weight: 600; font-size: .82rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .note { color: var(--muted); font-size: .9rem; }
+  .chart { margin: 1rem 0 1.25rem; }
+  .row { display: flex; align-items: center; gap: .75rem; margin: .5rem 0; }
+  .who { flex: 0 0 8.5rem; font-size: .9rem; }
+  .track {
+    flex: 1 1 auto; height: 1.4rem; background: var(--code-bg);
+    border: 1px solid var(--line); border-radius: 4px; overflow: hidden;
+  }
+  .track i { display: block; height: 100%; background: var(--muted); }
+  .track i.me { background: var(--accent); }
+  .track i.warn { background: var(--slop); }
+  .val { flex: 0 0 3.6rem; text-align: right; font-variant-numeric: tabular-nums; font-size: .9rem; }
+  @media (max-width: 30rem) {
+    .who { flex-basis: 6rem; font-size: .8rem; }
+    .val { flex-basis: 3rem; font-size: .8rem; }
+  }
   .rule { border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.15rem; margin: 1.25rem 0; }
   .rule h3 { margin-top: 0; }
   footer { margin: 4rem 0 3rem; padding-top: 1.5rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .9rem; }
@@ -146,21 +161,82 @@ a large gap between it and the headline means the bot learned repository
 identity, which is worth nothing in production where an install sees one
 repository.</p>
 
-<h2>Baselines to beat</h2>
+<h2>Results</h2>
+<p class="note">Test split, 910 pull requests (141 slop, 769 ham). Corpus
+fingerprint <code>0e5c0393dec6517c</code>. Pullsift is scored out of fold:
+every prediction comes from a model that never trained on that author.</p>
+
+<h3>Recall at a 1 percent false-positive budget</h3>
+<p class="note">The headline metric. Of all the slop in the held-out split, how
+much does the bot catch while wrongly flagging at most one percent of
+legitimate work.</p>
+<div class="chart">
+  <div class="row">
+    <span class="who">Pullsift</span>
+    <span class="track"><i style="width:24.8%" class="me"></i></span>
+    <span class="val">24.8%</span>
+  </div>
+  <div class="row">
+    <span class="who">Account age</span>
+    <span class="track"><i style="width:12.1%"></i></span>
+    <span class="val">12.1%</span>
+  </div>
+  <div class="row">
+    <span class="who">First-timer flag</span>
+    <span class="track"><i style="width:0.6%"></i></span>
+    <span class="val">0.0%</span>
+  </div>
+</div>
+<p class="note">Pullsift catches twice what the account-age heuristic does. The
+first-timer flag catches nothing at this budget, because a binary rule cannot
+be tuned to a budget: it flags every newcomer or none, and flagging every
+newcomer costs far more than one percent.</p>
+
+<h3>AUC, and why it misleads here</h3>
+<div class="chart">
+  <div class="row">
+    <span class="who">First-timer flag</span>
+    <span class="track"><i style="width:91.8%" class="warn"></i></span>
+    <span class="val">0.918</span>
+  </div>
+  <div class="row">
+    <span class="who">Pullsift</span>
+    <span class="track"><i style="width:83.7%" class="me"></i></span>
+    <span class="val">0.837</span>
+  </div>
+  <div class="row">
+    <span class="who">Account age</span>
+    <span class="track"><i style="width:59.9%"></i></span>
+    <span class="val">0.599</span>
+  </div>
+</div>
+<p class="note">Ranked by AUC, the dumbest baseline wins. Two reasons, both
+stated rather than hidden. GitHub records author association after the
+outcome, so merging promotes an author and the field partly encodes the label;
+the first-timer flag exploits that leak directly. And AUC rewards ranking
+across the whole range, including regions no maintainer would ever operate in.
+A bot that ranks well but cannot separate anything at a survivable
+false-positive rate is useless in a review queue. That is why the headline
+metric is recall at a fixed budget, and why this benchmark ships the leaky
+baseline instead of quietly dropping it.</p>
+
 <div class="table-scroll">
 <table>
-  <thead><tr><th>Baseline</th><th>What it does</th><th class="num">AUC</th></tr></thead>
+  <thead><tr>
+    <th>Bot</th><th>Approach</th>
+    <th class="num">Recall at 1% FPR</th><th class="num">95% CI</th><th class="num">AUC</th>
+  </tr></thead>
   <tbody>
-    <tr><td>First-timer flag</td><td>Flag every new contributor</td><td class="num">0.92</td></tr>
-    <tr><td>Account age</td><td>Younger account, higher score</td><td class="num">0.62</td></tr>
+    <tr><td><b>Pullsift</b></td><td>Fitted rule engine, three lanes</td><td class="num">0.248</td><td class="num">0.18 - 0.35</td><td class="num">0.837</td></tr>
+    <tr><td>Account age</td><td>Younger account, higher score</td><td class="num">0.121</td><td class="num">0.06 - 0.19</td><td class="num">0.599</td></tr>
+    <tr><td>First-timer flag</td><td>Flag every new contributor</td><td class="num">0.000</td><td class="num">0.00 - 0.00</td><td class="num">0.918</td></tr>
   </tbody>
 </table>
 </div>
-<p class="note">Both ship with the corpus. The first-timer baseline scores
-suspiciously well, and the benchmark says why rather than hiding it: GitHub's
-author association is recorded after the outcome, so merging promotes an author
-and the field partly encodes the label. It is documented as a leak, and it is
-the reason AUC alone is a poor way to rank bots here.</p>
+<p class="note">Confidence intervals are bootstrapped, because at this budget a
+single borderline record moves the point estimate. Overlapping intervals are a
+tie. Pullsift's own numbers are published here at the same standard demanded of
+anyone else: same split, same scorer, same fingerprint, no exceptions taken.</p>
 
 <h2>Run it</h2>
 <pre>git clone https://github.com/FizzWizZleDazzle/Pullsift
