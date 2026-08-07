@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>slopbench - a benchmark for PR triage bots</title>
+<meta name="description" content="Real labeled pull requests, a fixed held-out split, and a scorer with no dependencies. Report comparable numbers for your PR triage bot.">
+<style>
+  :root {
+    --bg: #ffffff; --fg: #16181d; --muted: #5a6270; --line: #e3e6ea;
+    --accent: #1f6feb; --code-bg: #f5f6f8; --slop: #d1434b; --ham: #2f9e5e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --fg: #e7e9ee; --muted: #9aa3b2; --line: #262b33;
+      --accent: #6ea8ff; --code-bg: #171a20; --slop: #f0666e; --ham: #4cc47f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 0 1.25rem; }
+  header { padding: 4rem 0 2.5rem; }
+  .kicker { color: var(--muted); font-size: .9rem; margin: 0 0 .5rem; }
+  .kicker a { color: var(--muted); }
+  h1 { font-size: 2.4rem; line-height: 1.15; margin: 0 0 .75rem; letter-spacing: -0.02em; }
+  h2 { font-size: 1.3rem; margin: 3rem 0 .75rem; letter-spacing: -0.01em; }
+  h3 { font-size: 1rem; margin: 1.75rem 0 .4rem; }
+  .lede { font-size: 1.12rem; color: var(--muted); margin: 0 0 1.5rem; }
+  p { margin: 0 0 1rem; }
+  a { color: var(--accent); }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .875em; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: .9rem 1rem; overflow-x: auto;
+  }
+  ul { padding-left: 1.15rem; }
+  li { margin: .4rem 0; }
+  .stats { display: flex; flex-wrap: wrap; gap: 1.5rem; margin: 1.5rem 0 2rem; }
+  .stat b { display: block; font-size: 1.9rem; line-height: 1.1; letter-spacing: -0.02em; }
+  .stat span { color: var(--muted); font-size: .85rem; }
+  .bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; margin: .35rem 0 .25rem; }
+  .bar i { display: block; }
+  .bar .s { background: var(--slop); }
+  .bar .h { background: var(--ham); }
+  .legend { color: var(--muted); font-size: .85rem; }
+  .legend b { font-weight: 600; }
+  .legend .sw { display: inline-block; width: .6rem; height: .6rem; border-radius: 2px; margin-right: .3rem; }
+  .table-scroll { overflow-x: auto; margin: 1.25rem 0; }
+  table { border-collapse: collapse; width: 100%; min-width: 32rem; }
+  th, td { text-align: left; padding: .55rem .75rem; border-bottom: 1px solid var(--line); }
+  th { font-weight: 600; font-size: .82rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .note { color: var(--muted); font-size: .9rem; }
+  .rule { border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.15rem; margin: 1.25rem 0; }
+  .rule h3 { margin-top: 0; }
+  footer { margin: 4rem 0 3rem; padding-top: 1.5rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .9rem; }
+  .cta { display: inline-block; margin: .5rem .5rem .5rem 0; padding: .55rem 1.1rem; border: 1px solid var(--line); border-radius: 8px; text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <p class="kicker"><a href="/">Pullsift</a> / slopbench</p>
+  <h1>slopbench</h1>
+  <p class="lede">Real labeled pull requests, a fixed held-out split, and a
+  scorer with no dependencies. Run your triage bot over it and report a number
+  anyone can check.</p>
+  <a class="cta" href="https://github.com/FizzWizZleDazzle/Pullsift/tree/main/bench">Corpus and scorer</a>
+  <a class="cta" href="https://github.com/FizzWizZleDazzle/Pullsift/blob/main/bench/results.md">Current results</a>
+</header>
+
+<div class="stats">
+  <div class="stat"><b>2,949</b><span>labeled pull requests</span></div>
+  <div class="stat"><b>690</b><span>slop</span></div>
+  <div class="stat"><b>2,259</b><span>ham</span></div>
+  <div class="stat"><b>33</b><span>mining sources</span></div>
+</div>
+<div class="bar" aria-hidden="true">
+  <i class="s" style="width:23.4%"></i><i class="h" style="width:76.6%"></i>
+</div>
+<p class="legend">
+  <span class="sw s" style="background:var(--slop)"></span><b>slop</b>: closed
+  unmerged, rejected by a maintainer.
+  <span class="sw h" style="background:var(--ham);margin-left:1rem"></span><b>ham</b>:
+  merged.
+</p>
+
+<h2>Why it exists</h2>
+<p>Every triage bot publishes its own anecdotes. Comparing two of them needs a
+shared corpus, a shared split, and a shared metric. This supplies all three,
+built from mined incidents: label-mined spam waves, the express.js README
+flood, hacktoberfest farming, campaign artifacts, and agent-written pull
+requests both rejected and merged.</p>
+
+<h2>What it measures</h2>
+<p>The headline number is <b>recall on AI-generated slop at a one percent
+false-positive budget</b>, on the held-out split. Human farming is a solved
+detection problem; machine output that reads like real work is not, so the
+benchmark weights the hard half.</p>
+<p>Every slop record carries an audited kind: <code>ai</code>,
+<code>human</code>, or <code>unclear</code>. The scorer reports recall per
+kind, plus overall recall at five, one, and a tenth of a percent, AUC, and
+per-source recall, because a bot tuned for one wave shows up as a hole in one
+source.</p>
+
+<h2>The traps</h2>
+<p>Several sources exist only to break shortcuts. A bot that takes any of these
+shortcuts scores well on a naive corpus and badly here.</p>
+<div class="rule">
+  <h3>Convicting on "an AI wrote this"</h3>
+  <p><code>agent-merged</code> is agent-written work that a human reviewed and a
+  maintainer merged. Provenance markers everywhere, and still ham, because
+  someone answered for it.</p>
+</div>
+<div class="rule">
+  <h3>Keying on AI vocabulary</h3>
+  <p><code>ai-topic-merged</code> is merged work about AI tooling: adding a
+  Claude API client, an OpenAI integration. Agent words everywhere, no
+  provenance at all.</p>
+</div>
+<div class="rule">
+  <h3>Trusting the account instead of the work</h3>
+  <p><code>laundering-ham</code> holds the genuine merged pull requests of
+  authors who later posted slop, so prior merges cannot exculpate a bad one.
+  Twin sources pair the same title shape in both outcomes: merged typo fixes
+  against rejected typo farming, real security fixes against fabricated ones.</p>
+</div>
+<div class="rule">
+  <h3>Reading the answer</h3>
+  <p>A bot reads <code>inputs.jsonl</code> only. Outcome fields live in
+  separate files, the author dossier is filtered to history that predates the
+  pull request, and repo stars are coarsened, so the obvious leaks are closed
+  by construction rather than by request.</p>
+</div>
+
+<h2>The split</h2>
+<p>Held out by author, not by pull request: an author whose lowercased login
+hashes to fold four of five is test. The rule is deterministic and public, so a
+described method can be checked. The scorer also reports a repo-disjoint slice;
+a large gap between it and the headline means the bot learned repository
+identity, which is worth nothing in production where an install sees one
+repository.</p>
+
+<h2>Baselines to beat</h2>
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Baseline</th><th>What it does</th><th class="num">AUC</th></tr></thead>
+  <tbody>
+    <tr><td>First-timer flag</td><td>Flag every new contributor</td><td class="num">0.92</td></tr>
+    <tr><td>Account age</td><td>Younger account, higher score</td><td class="num">0.62</td></tr>
+  </tbody>
+</table>
+</div>
+<p class="note">Both ship with the corpus. The first-timer baseline scores
+suspiciously well, and the benchmark says why rather than hiding it: GitHub's
+author association is recorded after the outcome, so merging promotes an author
+and the field partly encodes the label. It is documented as a leak, and it is
+the reason AUC alone is a poor way to rank bots here.</p>
+
+<h2>Run it</h2>
+<pre>git clone https://github.com/FizzWizZleDazzle/Pullsift
+cd Pullsift
+
+# your bot reads inputs.jsonl and writes one score per PR
+your-bot bench/corpus/inputs.jsonl > predictions.jsonl
+
+python3 bench/score.py predictions.jsonl</pre>
+<p>Predictions are one JSON object per line:
+<code>{"id": "owner/repo#number", "score": 0.87}</code>, where score is a
+probability that the pull request is slop. Every test-split record needs one;
+the scorer aborts on gaps, so abstaining on hard cases cannot inflate a
+result.</p>
+
+<h2>Reporting a result</h2>
+<p>The corpus grows, so a number without a revision means nothing. The scorer
+prints a fingerprint of the record ids and labels; publish it beside your
+numbers, and compare only across matching fingerprints. Say what your bot reads,
+and say what you fitted and on what. Fitting on test-split authors invalidates
+the result.</p>
+<p>The headline carries a bootstrap confidence interval, because at a one
+percent budget on this much ham a single borderline record moves the point
+estimate. Treat overlapping intervals as a tie.</p>
+
+<h2>Honest limits</h2>
+<ul>
+  <li>Labels are maintainer decisions, not ground truth. A pull request is slop
+  because a maintainer closed it as such.</li>
+  <li>The corpus over-represents slop that got labeled and under-represents
+  slop that was closed quietly.</li>
+  <li>Ham is merged work, which excludes legitimate pull requests rejected on
+  their merits.</li>
+  <li>Account-level dossier aggregates are mining-time snapshots and leak a
+  little future.</li>
+  <li>Absolute recall here does not transfer to production unchanged. The
+  benchmark compares bots against each other; it does not predict your queue.</li>
+</ul>
+
+<footer>
+  <p>slopbench ships with <a href="/">Pullsift</a> under the MIT license.
+  Corrections and removal requests are handled through
+  <a href="https://github.com/FizzWizZleDazzle/Pullsift/issues">the issue tracker</a>;
+  a removal changes the fingerprint, which is the point.</p>
+</footer>
+
+</div>
+</body>
+</html>
