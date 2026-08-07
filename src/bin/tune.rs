@@ -34,8 +34,6 @@ struct Record {
     body: String,
     author: String,
     #[serde(default)]
-    author_association: String,
-    #[serde(default)]
     head_ref: String,
     #[serde(default)]
     additions: u64,
