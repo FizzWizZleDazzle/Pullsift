@@ -25,3 +25,19 @@ jobs:
           python3 bench/score.py /tmp/ft.jsonl
           python3 bench/baselines/account_age.py > /tmp/age.jsonl
           python3 bench/score.py /tmp/age.jsonl
+
+  prose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: reject slop wording in docs and site
+        run: |
+          if grep -rinE "comprehensive|seamless|leverag|streamlin|delve into|furthermore|moreover|it is worth noting|in conclusion|elevate the|cutting.edge|game.chang" \
+             README.md docs/ bench/README.md site/ ; then
+            echo "slop wording found; rewrite it"
+            exit 1
+          fi
+          if grep -rP "[^\x00-\x7F]" README.md docs/ bench/README.md site/index.html ; then
+            echo "non-ascii found"
+            exit 1
+          fi

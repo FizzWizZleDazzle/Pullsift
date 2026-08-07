@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pullsift - PR triage for maintainers</title>
+<meta name="description" content="Pullsift decides whether a pull request is worth a maintainer's first look, and keeps the rest out of the review queue.">
+<style>
+  :root {
+    --bg: #ffffff; --fg: #16181d; --muted: #5a6270; --line: #e3e6ea;
+    --accent: #1f6feb; --code-bg: #f5f6f8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --fg: #e7e9ee; --muted: #9aa3b2; --line: #262b33;
+      --accent: #6ea8ff; --code-bg: #171a20;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 46rem; margin: 0 auto; padding: 0 1.25rem; }
+  header { padding: 5rem 0 3rem; }
+  h1 { font-size: 2.6rem; line-height: 1.15; margin: 0 0 .75rem; letter-spacing: -0.02em; }
+  h2 { font-size: 1.3rem; margin: 3rem 0 .75rem; letter-spacing: -0.01em; }
+  h3 { font-size: 1rem; margin: 1.75rem 0 .4rem; }
+  .lede { font-size: 1.15rem; color: var(--muted); margin: 0 0 2rem; }
+  p { margin: 0 0 1rem; }
+  a { color: var(--accent); }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .875em; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: .9rem 1rem; overflow-x: auto;
+  }
+  ul { padding-left: 1.15rem; }
+  li { margin: .35rem 0; }
+  .tiers { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin: 1.25rem 0; }
+  .tier { display: flex; gap: .9rem; padding: .8rem 1rem; border-top: 1px solid var(--line); }
+  .tier:first-child { border-top: 0; }
+  .tier b { min-width: 5.5rem; font-weight: 600; }
+  .tier span { color: var(--muted); }
+  .table-scroll { overflow-x: auto; margin: 1.25rem 0; }
+  table { border-collapse: collapse; width: 100%; min-width: 30rem; }
+  th, td { text-align: left; padding: .55rem .75rem; border-bottom: 1px solid var(--line); }
+  th { font-weight: 600; font-size: .85rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .note { color: var(--muted); font-size: .9rem; }
+  footer { margin: 4rem 0 3rem; padding-top: 1.5rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .9rem; }
+  .cta { display: inline-block; margin: .5rem .5rem .5rem 0; padding: .55rem 1.1rem; border: 1px solid var(--line); border-radius: 8px; text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Pullsift</h1>
+  <p class="lede">Decides whether a pull request is worth a maintainer's first
+  look, and keeps the rest out of the review queue.</p>
+  <a class="cta" href="https://github.com/FizzWizZleDazzle/pullsift">Source</a>
+  <a class="cta" href="https://github.com/FizzWizZleDazzle/pullsift/tree/main/bench">Benchmark</a>
+</header>
+
+<h2>The problem</h2>
+<p>Maintainers lose hours to pull requests nobody should have to read. Agent
+output that no human checked before submitting. Tutorial floods where hundreds
+of new accounts send the same change. Drive-by accounts with a trail of
+closed-as-invalid work elsewhere. Pull requests against repositories that accept
+none.</p>
+<p>Existing tools score one pull request, or one account, inside one repository.
+Pullsift is built around sharing: repositories in the network exchange campaign
+signatures and corroborated author verdicts, so the first repository hit by a
+wave inoculates the rest.</p>
+
+<h2>What it decides</h2>
+<div class="tiers">
+  <div class="tier"><b>Pass</b><span>Nothing happens. The pull request goes to the queue.</span></div>
+  <div class="tier"><b>Label</b><span>Tagged for attention, no action taken.</span></div>
+  <div class="tier"><b>Hold</b><span>Converted to draft with one question. A human sentence lifts it.</span></div>
+  <div class="tier"><b>Close</b><span>Closed with the full evidence table and one reply to appeal.</span></div>
+</div>
+<p>Tier thresholds sit at measured false-positive rates, so the cost of being
+wrong is a number rather than a hope. Every install starts in dry run: it
+annotates what it would have done and acts on nothing.</p>
+
+<h2>How it decides</h2>
+<p>Every signal is a rule with a weight fitted on real pull requests, and every
+verdict carries the evidence that produced it. Three lanes feed one score:</p>
+<ul>
+  <li><b>Campaign signatures.</b> Diff and prose similarity cluster arrivals
+  across repositories, with burst detection, so a flood is caught as one
+  campaign even when every author is a fresh account.</li>
+  <li><b>Author history.</b> Whether the account answers for its work:
+  abandonment after review, provenance markers, submission patterns, and
+  corroborated verdicts from other installations.</li>
+  <li><b>Content.</b> Whether the body describes the diff, whether it
+  references code that exists, and a self-hosted text model that scores prose
+  for machine authorship.</li>
+</ul>
+
+<h2>AI policy is yours to set</h2>
+<p>Whether AI assistance is welcome is a project's call, not a detector's.
+Pullsift measures whether a human answers for the work; you decide how much the
+tooling itself matters.</p>
+<pre># .github/pullsift.yml
+ai_policy: welcome    # AI involvement carries no weight
+ai_policy: neutral    # the default: markers count for what the data says
+ai_policy: disclose   # fine when disclosed; undisclosed AI prose is penalized
+ai_policy: forbid     # any provenance marker escalates</pre>
+<p>Under <code>welcome</code>, an agent-written documentation fix from an
+account that responds to review passes untouched. Under any policy, no single
+text signal can reach the close tier alone.</p>
+
+<h2>slopbench</h2>
+<p>Triage bots publish anecdotes. Comparing them needs a shared corpus, a shared
+split, and a shared metric. Pullsift ships all three: real labeled pull requests,
+a fixed author-held-out test split, and a scorer with no dependencies.</p>
+<p>The headline metric is recall on AI-generated slop at a one percent
+false-positive budget. Human farming is a solved detection problem; machine
+output that reads like work is not.</p>
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Reference bot</th><th>Approach</th><th class="num">AUC</th></tr></thead>
+  <tbody>
+    <tr><td>Pullsift</td><td>Fitted rule engine, out of fold</td><td class="num">see results</td></tr>
+    <tr><td>First-timer flag</td><td>Flag every new contributor</td><td class="num">0.92</td></tr>
+    <tr><td>Account age</td><td>Younger account, higher score</td><td class="num">0.62</td></tr>
+  </tbody>
+</table>
+</div>
+<p class="note">Numbers are pinned to a corpus revision by fingerprint; the
+current figures live in the repository. The baselines are shipped so a new bot
+has something honest to beat, and the first-timer baseline is deliberately
+included as a warning: it scores well here partly because of a documented leak
+in the data, which the benchmark states rather than hides.</p>
+
+<h2>Install</h2>
+<p>Point the App at a repository and leave dry run on for a week. Read what it
+would have done. Then decide.</p>
+<pre>dry_run: false
+challenge: true
+exempt_users: [trusted-bot]
+protected_paths: [README.md, LICENSE]</pre>
+<p>Free for the first hundred scored pull requests per month, per install.
+Beyond that it is paid, because the cost of running it scales with volume.
+Public and private repositories cost the same.</p>
+
+<h2>Limitations</h2>
+<ul>
+  <li>Federation between installations is designed and tested, not yet switched
+  on. Each install currently learns alone.</li>
+  <li>Text detectors are weak evidence and biased against writers whose first
+  language is not English. Pullsift gives them one weight among many and never
+  lets them decide alone.</li>
+  <li>Labels in the benchmark are maintainer decisions, not ground truth. A
+  closed pull request is slop because a maintainer said so.</li>
+</ul>
+
+<footer>
+  <p>Pullsift is open source under the MIT license.
+  <a href="https://github.com/FizzWizZleDazzle/pullsift">github.com/FizzWizZleDazzle/pullsift</a></p>
+</footer>
+
+</div>
+</body>
+</html>
