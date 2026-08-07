@@ -21,7 +21,47 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-DROP = ("label", "source", "state", "merged", "pr_labels", "repo_stars", "audit", "kind")
+# author_association is an outcome field: GitHub computes it at read time,
+# so merging promotes the author from NONE to CONTRIBUTOR. In the archive
+# it separates the classes almost perfectly, which is a record of the
+# outcome, not a signal available when the PR arrived. It is replaced by
+# point-in-time fields reconstructed from history predating the PR.
+DROP = (
+    "label",
+    "source",
+    "state",
+    "merged",
+    "pr_labels",
+    "repo_stars",
+    "audit",
+    "kind",
+    "author_association",
+)
+
+
+def point_in_time_history(record):
+    """What the author's public record looked like when this PR opened."""
+    user = ((record.get("dossier") or {}).get("data") or {}).get("user") or {}
+    nodes = (user.get("pullRequests") or {}).get("nodes") or []
+    cutoff = record.get("created_at") or ""
+    repo = record["repo"].lower()
+    prior = prior_here = merged_here = 0
+    for n in nodes:
+        created = n.get("createdAt") or ""
+        if not cutoff or not created or created >= cutoff:
+            continue
+        prior += 1
+        if ((n.get("repository") or {}).get("nameWithOwner") or "").lower() == repo:
+            prior_here += 1
+            if n.get("merged"):
+                merged_here += 1
+    return {
+        # No visible prior PR to this repo when the PR was opened.
+        "first_pr_to_repo": prior_here == 0,
+        "prior_prs_visible": prior,
+        "prior_prs_this_repo": prior_here,
+        "prior_merged_this_repo": merged_here,
+    }
 
 
 def scrub_dossier(record):
@@ -74,6 +114,7 @@ def main():
             slim["id"] = rid
             stars = r.get("repo_stars") or 0
             slim["repo_stars_magnitude"] = int(math.log10(stars)) if stars > 0 else 0
+            slim.update(point_in_time_history(r))
             slim["dossier"] = scrub_dossier(r)
             inputs.append(slim)
 

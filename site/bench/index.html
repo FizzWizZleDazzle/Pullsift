@@ -90,13 +90,13 @@
 </header>
 
 <div class="stats">
-  <div class="stat"><b>2,949</b><span>labeled pull requests</span></div>
+  <div class="stat"><b>3,315</b><span>labeled pull requests</span></div>
   <div class="stat"><b>690</b><span>slop</span></div>
-  <div class="stat"><b>2,259</b><span>ham</span></div>
+  <div class="stat"><b>2,625</b><span>ham</span></div>
   <div class="stat"><b>33</b><span>mining sources</span></div>
 </div>
 <div class="bar" aria-hidden="true">
-  <i class="s" style="width:23.4%"></i><i class="h" style="width:76.6%"></i>
+  <i class="s" style="width:20.8%"></i><i class="h" style="width:79.2%"></i>
 </div>
 <p class="legend">
   <span class="sw s" style="background:var(--slop)"></span><b>slop</b>: closed
@@ -173,8 +173,8 @@ legitimate work.</p>
 <div class="chart">
   <div class="row">
     <span class="who">Pullsift</span>
-    <span class="track"><i style="width:24.8%" class="me"></i></span>
-    <span class="val">24.8%</span>
+    <span class="track"><i style="width:25.5%" class="me"></i></span>
+    <span class="val">25.5%</span>
   </div>
   <div class="row">
     <span class="who">Account age</span>
@@ -192,17 +192,17 @@ first-timer flag catches nothing at this budget, because a binary rule cannot
 be tuned to a budget: it flags every newcomer or none, and flagging every
 newcomer costs far more than one percent.</p>
 
-<h3>AUC, and why it misleads here</h3>
+<h3>AUC, and the leak we found with it</h3>
 <div class="chart">
   <div class="row">
     <span class="who">First-timer flag</span>
-    <span class="track"><i style="width:91.8%" class="warn"></i></span>
-    <span class="val">0.918</span>
+    <span class="track"><i style="width:62.0%" class="warn"></i></span>
+    <span class="val">0.620</span>
   </div>
   <div class="row">
     <span class="who">Pullsift</span>
-    <span class="track"><i style="width:83.7%" class="me"></i></span>
-    <span class="val">0.837</span>
+    <span class="track"><i style="width:83.4%" class="me"></i></span>
+    <span class="val">0.834</span>
   </div>
   <div class="row">
     <span class="who">Account age</span>
@@ -210,15 +210,27 @@ newcomer costs far more than one percent.</p>
     <span class="val">0.599</span>
   </div>
 </div>
-<p class="note">Ranked by AUC, the dumbest baseline wins. Two reasons, both
-stated rather than hidden. GitHub records author association after the
-outcome, so merging promotes an author and the field partly encodes the label;
-the first-timer flag exploits that leak directly. And AUC rewards ranking
-across the whole range, including regions no maintainer would ever operate in.
-A bot that ranks well but cannot separate anything at a survivable
-false-positive rate is useless in a review queue. That is why the headline
-metric is recall at a fixed budget, and why this benchmark ships the leaky
-baseline instead of quietly dropping it.</p>
+<p class="note">This chart used to say something else. In an earlier revision
+the first-timer flag scored 0.918 here and beat Pullsift, which is what sent us
+looking for the reason.</p>
+<p class="note">The reason was a leak in the corpus, not skill in the baseline.
+GitHub computes <code>author_association</code> when you read it, not when the
+pull request was opened, and merging a contribution promotes its author from
+NONE to CONTRIBUTOR. In mined data that field is a record of the outcome: it
+was NONE for 75 percent of slop and 3 percent of ham. Any bot reading it was
+reading the answer.</p>
+<p class="note">It is gone. Records now carry
+<code>first_pr_to_repo</code>, reconstructed from history that predates the
+pull request, the way a live webhook would have seen it. The first-timer
+baseline dropped from 0.918 to 0.620, and being new to a repository went from
+implying 86 percent slop to implying 34 percent, which is a number a maintainer
+might actually recognize. Pullsift's own tuner was reading the same poisoned
+field and was corrected too, so the comparison above is between bots rather
+than between exposures to a leak.</p>
+<p class="note">AUC stays on the page because it is the metric everyone quotes,
+and because it rewards ranking in regions no maintainer operates in. A bot that
+ranks well but separates nothing at a survivable false-positive rate is useless
+in a review queue. That is why the headline is recall at a fixed budget.</p>
 
 <div class="table-scroll">
 <table>
@@ -227,9 +239,9 @@ baseline instead of quietly dropping it.</p>
     <th class="num">Recall at 1% FPR</th><th class="num">95% CI</th><th class="num">AUC</th>
   </tr></thead>
   <tbody>
-    <tr><td><b>Pullsift</b></td><td>Fitted rule engine, three lanes</td><td class="num">0.248</td><td class="num">0.18 - 0.35</td><td class="num">0.837</td></tr>
+    <tr><td><b>Pullsift</b></td><td>Fitted rule engine, three lanes</td><td class="num">0.255</td><td class="num">0.17 - 0.35</td><td class="num">0.834</td></tr>
     <tr><td>Account age</td><td>Younger account, higher score</td><td class="num">0.121</td><td class="num">0.06 - 0.19</td><td class="num">0.599</td></tr>
-    <tr><td>First-timer flag</td><td>Flag every new contributor</td><td class="num">0.000</td><td class="num">0.00 - 0.00</td><td class="num">0.918</td></tr>
+    <tr><td>First-timer flag</td><td>Flag every new contributor</td><td class="num">0.000</td><td class="num">0.00 - 0.00</td><td class="num">0.620</td></tr>
   </tbody>
 </table>
 </div>

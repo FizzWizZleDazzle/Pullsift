@@ -4,3 +4,6 @@
 corpus_mining.log
 __pycache__/
 *.log
+
+# Benchmark corpus lives in release assets, not git: bench/fetch_corpus.sh
+bench/corpus/

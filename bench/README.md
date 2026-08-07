@@ -53,7 +53,9 @@ Fields in `inputs.jsonl`:
 | `repo`, `number` | PR identity |
 | `title`, `body` | as posted (body capped) |
 | `author`, `author_id` | login and (newer records) stable numeric id |
-| `author_association` | GitHub's association enum (see leak note) |
+| `first_pr_to_repo` | no visible prior PR to this repo when it opened |
+| `prior_prs_visible` | author PRs predating this one, across repos |
+| `prior_prs_this_repo`, `prior_merged_this_repo` | same, this repo only |
 | `head_ref`, `base_ref`, `default_branch` | branches (newer records) |
 | `additions`, `deletions`, `changed_files` | diff stats |
 | `created_at` | when the PR was opened |
@@ -185,9 +187,11 @@ contain. Diffs and bodies are capped. The dossier's per-PR history is
 filtered to entries that predate the scored PR, but account-level
 aggregates (followers, restricted contribution counts) are mining-time
 snapshots and leak a little future.
-`author_association` is also mining-time: merging promotes an author to
-CONTRIBUTOR, so the field partially encodes the label, and a predictor
-leaning on it scores better here than it would at arrival time. The
-first-timer baseline exploits exactly this leak, which is why its AUC
-flatters it. Results within these bounds compare bots fairly; absolute
+`author_association` is not in the released inputs at all. GitHub computes
+it at read time, so merging promotes the author from NONE to CONTRIBUTOR
+and the mined value records the outcome rather than the arrival state: it
+was NONE for 75 percent of slop and 3 percent of ham. It is replaced by
+`first_pr_to_repo` and the prior-PR counts, reconstructed from history
+predating each PR. Removing it dropped the first-timer baseline from 0.918
+AUC to 0.620. Results within these bounds compare bots fairly; absolute
 recall numbers do not transfer to production unchanged.

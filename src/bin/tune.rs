@@ -123,6 +123,25 @@ fn load(dir: &std::path::Path) -> Vec<Record> {
     out
 }
 
+/// "NONE" when the author had no visible PR to this repo before this one,
+/// otherwise "CONTRIBUTOR". The mined `author_association` cannot be used:
+/// merging promotes the author, so it encodes the outcome.
+fn point_in_time_association(dossier: &serde_json::Value, repo: &str, created_at: &str) -> String {
+    let nodes = dossier["data"]["user"]["pullRequests"]["nodes"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let prior_here = nodes.iter().any(|n| {
+        let created = n["createdAt"].as_str().unwrap_or("");
+        let node_repo = n["repository"]["nameWithOwner"].as_str().unwrap_or("");
+        !created.is_empty()
+            && !created_at.is_empty()
+            && created < created_at
+            && node_repo.eq_ignore_ascii_case(repo)
+    });
+    if prior_here { "CONTRIBUTOR" } else { "NONE" }.to_string()
+}
+
 /// Load the optional detector sidecar (`detector.jsonl`): offline scores
 /// from the self-hosted AI-text detector, keyed by `repo#number`.
 fn load_detector(dir: &std::path::Path) -> BTreeMap<String, f64> {
@@ -168,6 +187,12 @@ fn replay(
             .parse::<DateTime<Utc>>()
             .unwrap_or_else(|_| DateTime::<Utc>::from_timestamp(1_750_000_000, 0).unwrap());
 
+        // Recorded author_association is an outcome field: GitHub computes
+        // it at read time, so a merged PR's author reads CONTRIBUTOR even
+        // though they were a stranger when it opened. Reconstruct the
+        // arrival-time value from history predating this PR, the way a live
+        // webhook would have seen it.
+        let association = point_in_time_association(&r.dossier, &r.repo, &r.created_at);
         let ev = PrEvent {
             action: "opened".into(),
             repo: r.repo.clone(),
@@ -179,7 +204,7 @@ fn replay(
             deletions: r.deletions,
             changed_files: r.changed_files,
             commit_count: r.commits.len() as u64,
-            author_association: r.author_association.clone(),
+            author_association: association,
             head_is_fork: true,
             head_ref: r.head_ref.clone(),
             node_id: String::new(),

@@ -10,9 +10,9 @@ Corpus at generation time: 690 slop, 2625 ham.
 ```
 corpus fingerprint: 0e5c0393dec6517c
 == test split: 910 PRs (141 slop, 769 ham)
-  AUC: 0.9177
+  AUC: 0.6203
   recall at 1.0% FPR, 95% bootstrap CI: [0.000, 0.000]
-  recall at 5.0% FPR: 0.865 (threshold 0.1000, observed FPR 0.0299)
+  recall at 5.0% FPR: 0.000 (threshold 0.9000, observed FPR 0.0000)
   recall at 1.0% FPR: 0.000 (threshold 0.9000, observed FPR 0.0000)
   recall at 0.1% FPR: 0.000 (threshold 0.9000, observed FPR 0.0000)
   per-kind recall at 1% FPR:
@@ -37,7 +37,7 @@ corpus fingerprint: 0e5c0393dec6517c
     window:invalid       0/13
     window:spam          0/30
 == test split, repo-disjoint: 100 PRs (4 slop, 96 ham)
-  AUC: 0.5833
+  AUC: 0.6979
   recall at 1.0% FPR, 95% bootstrap CI: [0.000, 0.000]
   recall at 5.0% FPR: 0.000 (threshold 0.9000, observed FPR 0.0000)
   recall at 1.0% FPR: 0.000 (threshold 0.9000, observed FPR 0.0000)
@@ -100,13 +100,13 @@ corpus fingerprint: 0e5c0393dec6517c
 ```
 corpus fingerprint: 0e5c0393dec6517c
 == test split: 910 PRs (141 slop, 769 ham)
-  AUC: 0.8365
-  recall at 1.0% FPR, 95% bootstrap CI: [0.183, 0.345]
-  recall at 5.0% FPR: 0.404 (threshold 0.5303, observed FPR 0.0494)
-  recall at 1.0% FPR: 0.248 (threshold 0.7670, observed FPR 0.0091)
-  recall at 0.1% FPR: 0.170 (threshold 0.8922, observed FPR 0.0000)
+  AUC: 0.8337
+  recall at 1.0% FPR, 95% bootstrap CI: [0.174, 0.351]
+  recall at 5.0% FPR: 0.383 (threshold 0.5305, observed FPR 0.0494)
+  recall at 1.0% FPR: 0.255 (threshold 0.7716, observed FPR 0.0091)
+  recall at 0.1% FPR: 0.128 (threshold 0.9053, observed FPR 0.0000)
   per-kind recall at 1% FPR:
-    untagged             35/141
+    untagged             36/141
   per-source recall at 1% FPR:
     accused              2/28
     agent-closed         0/9
@@ -116,7 +116,7 @@ corpus fingerprint: 0e5c0393dec6517c
     invalid-window       3/12
     issue-first          0/1
     label:AI slop        0/7
-    label:hacktoberfest-invalid 4/9
+    label:hacktoberfest-invalid 3/9
     label:invalid        2/3
     label:low quality    0/1
     label:spam           0/1
@@ -125,13 +125,13 @@ corpus fingerprint: 0e5c0393dec6517c
     vuln-theater         1/1
     window:hacktoberfest-invalid 3/3
     window:invalid       4/13
-    window:spam          5/30
+    window:spam          7/30
 == test split, repo-disjoint: 100 PRs (4 slop, 96 ham)
   AUC: 0.5339
   recall at 1.0% FPR, 95% bootstrap CI: [0.000, 0.667]
-  recall at 5.0% FPR: 0.250 (threshold 0.3806, observed FPR 0.0417)
-  recall at 1.0% FPR: 0.000 (threshold 0.7987, observed FPR 0.0000)
-  recall at 0.1% FPR: 0.000 (threshold 0.7987, observed FPR 0.0000)
+  recall at 5.0% FPR: 0.250 (threshold 0.4538, observed FPR 0.0417)
+  recall at 1.0% FPR: 0.000 (threshold 0.8115, observed FPR 0.0000)
+  recall at 0.1% FPR: 0.000 (threshold 0.8115, observed FPR 0.0000)
   per-kind recall at 1% FPR:
     untagged             0/4
   per-source recall at 1% FPR:

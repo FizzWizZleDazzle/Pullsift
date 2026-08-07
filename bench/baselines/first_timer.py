@@ -21,7 +21,8 @@ def main():
 
     for line in (args.corpus / "inputs.jsonl").read_text().splitlines():
         r = json.loads(line)
-        first = r.get("author_association") in ("FIRST_TIME_CONTRIBUTOR", "NONE")
+        # Point in time: no visible prior PR to this repo when it opened.
+        first = r.get("first_pr_to_repo", True)
         print(json.dumps({"id": r["id"], "score": 0.9 if first else 0.1}))
 
 

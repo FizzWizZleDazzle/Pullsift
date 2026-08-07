@@ -21,6 +21,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: score the shipped baselines against the corpus
         run: |
+          bench/fetch_corpus.sh
           python3 bench/baselines/first_timer.py > /tmp/ft.jsonl
           python3 bench/score.py /tmp/ft.jsonl
           python3 bench/baselines/account_age.py > /tmp/age.jsonl
