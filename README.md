@@ -1,4 +1,4 @@
-# pullsift
+# Pullsift
 
 A GitHub App that decides whether a pull request is worth a maintainer's
 first look, and keeps the ones that are not out of the review queue.
@@ -10,7 +10,7 @@ submissions with no human behind them, tutorial floods where hundreds of
 new accounts send near-identical changes, drive-by accounts with a trail of
 closed-as-invalid PRs elsewhere, and PRs against repos that accept none.
 Existing tools score one PR or one account per repo, in isolation.
-pullsift is built around sharing: repos in the network exchange campaign
+Pullsift is built around sharing: repos in the network exchange campaign
 signatures and corroborated author verdicts, so the first repo hit by a wave
 inoculates the rest.
 
@@ -76,7 +76,7 @@ provenance marker escalates).
 - Federation between installations is designed and tested but not yet
   switched on; each install currently learns alone.
 - The dossier reads only public GitHub data, and GitHub hides the history
-  of accounts its own spam systems flag; pullsift treats that flag
+  of accounts its own spam systems flag; Pullsift treats that flag
   itself as a signal.
 - Tier thresholds are calibrated on a mined corpus of real PRs; treat
   close-tier automation as opt-in until your repo has feedback history.

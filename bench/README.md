@@ -141,7 +141,7 @@ own ham scores, so every bot pays the same FPR budget.
 
 Reference points to beat, regenerated with the corpus (see
 `results.md`): the shipped baselines (account age, first-timer flag) and
-pullsift's own out-of-fold predictions, produced by
+Pullsift's own out-of-fold predictions, produced by
 `cargo run --release --bin tune -- --dry --emit predictions.jsonl`.
 
 ## Reporting comparable results

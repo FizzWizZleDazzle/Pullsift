@@ -1,4 +1,4 @@
-# pullsift design
+# Pullsift design
 
 The scoring core, the three detection lanes, the challenge, the learner,
 and the federation formats. Code references are the authority; this doc
@@ -156,12 +156,12 @@ the tune output and the weights file, not here.
 The corpus doubles as a public benchmark (`bench/`): a fixed
 author-grouped test split, a prediction format, and a dependency-free
 scorer, so other triage bots can report comparable numbers. `tune --emit`
-writes pullsift's own out-of-fold predictions in that format. The
+writes Pullsift's own out-of-fold predictions in that format. The
 benchmark contract lives in `bench/README.md`.
 
 ## Learner (`learn.rs`, `store.rs`)
 
-Maintainer actions on scored PRs become labels; overrides of pullsift
+Maintainer actions on scored PRs become labels; overrides of Pullsift
 actions are corrections at five-fold weight. A nightly batch job refits and
 promotes only behind guardrails: minimum corpus size, both classes present
 in both splits, and held-out AUC within 0.005 of the incumbent. Promotion
