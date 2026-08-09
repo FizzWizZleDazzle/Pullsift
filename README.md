@@ -16,9 +16,9 @@ inoculates the rest.
 
 ## Quick start
 
-Install the hosted GitHub App on a repository and leave dry run on for a
-week: every install starts in dry-run, which annotates what it would have
-done without acting. Read what it would have done, then decide. Per-repo
+Install [the hosted GitHub App](https://github.com/apps/pullsift) on a
+repository and leave dry run on for a week: every install starts in
+dry-run, which annotates what it would have done without acting. Read what it would have done, then decide. Per-repo
 settings live in `.github/pullsift.yml`.
 
 ```yaml
