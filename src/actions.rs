@@ -6,10 +6,16 @@ use serde::{Deserialize, Serialize};
 
 pub const SUSPECT_LABEL: &str = "slop-suspect";
 
+/// Hidden marker in the score comment; rescores find and edit the existing
+/// comment instead of stacking a new one per push.
+pub const SCORE_COMMENT_MARKER: &str = "<!-- pullsift-score -->";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PlannedAction {
-    /// Below every threshold, or exempt: do nothing at all.
+    /// Exempt, or Pass with score comments off: do nothing at all.
     None,
+    /// Pass: the score comment alone, no label, no enforcement.
+    Comment { evidence_comment: String },
     /// T1: label plus a collapsed evidence comment.
     Label { evidence_comment: String },
     /// T2: convert to draft, label, add to the daily digest.
@@ -25,8 +31,17 @@ pub enum PlannedAction {
 
 /// Decide the action for a scored PR. `challenge_comment` is included when
 /// the repo runs challenges and the verdict landed in Hold.
-pub fn plan(verdict: &Verdict, challenge_comment: Option<String>, dry_run: bool) -> PlannedAction {
+/// `score_comments` gives a passing PR the score comment instead of silence.
+pub fn plan(
+    verdict: &Verdict,
+    challenge_comment: Option<String>,
+    dry_run: bool,
+    score_comments: bool,
+) -> PlannedAction {
     let action = match verdict.tier {
+        Tier::Pass if score_comments => PlannedAction::Comment {
+            evidence_comment: pass_comment(verdict),
+        },
         Tier::Pass => PlannedAction::None,
         Tier::Label => PlannedAction::Label {
             evidence_comment: evidence_comment(verdict),
@@ -41,7 +56,9 @@ pub fn plan(verdict: &Verdict, challenge_comment: Option<String>, dry_run: bool)
     };
     if dry_run {
         match action {
+            // A pass has no action to hold back; the score comment stands.
             PlannedAction::None => PlannedAction::None,
+            PlannedAction::Comment { .. } => action,
             other => PlannedAction::Label {
                 evidence_comment: format!(
                     "Dry run: Pullsift would have taken action \
@@ -59,6 +76,7 @@ pub fn plan(verdict: &Verdict, challenge_comment: Option<String>, dry_run: bool)
 pub fn action_name(a: &PlannedAction) -> &'static str {
     match a {
         PlannedAction::None => "none",
+        PlannedAction::Comment { .. } => "comment",
         PlannedAction::Label { .. } => "label",
         PlannedAction::Hold { .. } => "hold",
         PlannedAction::Close { .. } => "close",
@@ -82,6 +100,16 @@ pub fn evidence_comment(verdict: &Verdict) -> String {
     }
     s.push_str("\n</details>\n");
     s
+}
+
+/// The score comment for a passing PR: verdict first, evidence collapsed.
+fn pass_comment(verdict: &Verdict) -> String {
+    format!(
+        "{SCORE_COMMENT_MARKER}\nPullsift scored this pull request \
+         {:.3}, below every action threshold. No action taken.\n\n{}",
+        verdict.probability,
+        evidence_comment(verdict)
+    )
 }
 
 fn close_comment(verdict: &Verdict) -> String {
@@ -128,36 +156,67 @@ mod tests {
 
     #[test]
     fn tiers_map_to_actions() {
-        assert_eq!(plan(&verdict(Tier::Pass), None, false), PlannedAction::None);
         assert!(matches!(
-            plan(&verdict(Tier::Label), None, false),
+            plan(&verdict(Tier::Pass), None, false, true),
+            PlannedAction::Comment { .. }
+        ));
+        assert!(matches!(
+            plan(&verdict(Tier::Label), None, false, true),
             PlannedAction::Label { .. }
         ));
         assert!(matches!(
-            plan(&verdict(Tier::Hold), None, false),
+            plan(&verdict(Tier::Hold), None, false, true),
             PlannedAction::Hold { .. }
         ));
         assert!(matches!(
-            plan(&verdict(Tier::Close), None, false),
+            plan(&verdict(Tier::Close), None, false, true),
             PlannedAction::Close { .. }
         ));
     }
 
     #[test]
+    fn pass_comments_by_default_and_opting_out_silences_it() {
+        let PlannedAction::Comment { evidence_comment } =
+            plan(&verdict(Tier::Pass), None, false, true)
+        else {
+            panic!("pass must carry the score comment")
+        };
+        assert!(evidence_comment.contains(SCORE_COMMENT_MARKER));
+        assert!(evidence_comment.contains("No action taken"));
+        assert!(evidence_comment.contains("probability"));
+        assert_eq!(
+            plan(&verdict(Tier::Pass), None, false, false),
+            PlannedAction::None
+        );
+    }
+
+    #[test]
     fn dry_run_downgrades_everything_to_annotation() {
-        let a = plan(&verdict(Tier::Close), None, true);
+        let a = plan(&verdict(Tier::Close), None, true, true);
         let PlannedAction::Label { evidence_comment } = a else {
             panic!("dry run must annotate, not act")
         };
         assert!(evidence_comment.contains("Dry run"));
         assert!(evidence_comment.contains("`close`"));
-        // Pass stays silent even in dry run.
-        assert_eq!(plan(&verdict(Tier::Pass), None, true), PlannedAction::None);
+        // The pass score comment survives dry run; silence survives opt-out.
+        assert!(matches!(
+            plan(&verdict(Tier::Pass), None, true, true),
+            PlannedAction::Comment { .. }
+        ));
+        assert_eq!(
+            plan(&verdict(Tier::Pass), None, true, false),
+            PlannedAction::None
+        );
     }
 
     #[test]
     fn hold_carries_challenge_when_provided() {
-        let a = plan(&verdict(Tier::Hold), Some("challenge text".into()), false);
+        let a = plan(
+            &verdict(Tier::Hold),
+            Some("challenge text".into()),
+            false,
+            true,
+        );
         let PlannedAction::Hold {
             challenge_comment, ..
         } = a
@@ -169,7 +228,8 @@ mod tests {
 
     #[test]
     fn close_comment_names_signals_and_appeal() {
-        let PlannedAction::Close { comment } = plan(&verdict(Tier::Close), None, false) else {
+        let PlannedAction::Close { comment } = plan(&verdict(Tier::Close), None, false, true)
+        else {
             panic!()
         };
         assert!(comment.contains("AGENT_EMAIL"));

@@ -414,7 +414,10 @@ fn legit_claude_integration_pr_is_not_flagged() {
             .map(|e| e.rule.as_str())
             .collect::<Vec<_>>()
     );
-    assert_eq!(planned, PlannedAction::None);
+    assert!(
+        matches!(planned, PlannedAction::Comment { .. }),
+        "a pass plans the score comment and nothing else, got {planned:?}"
+    );
 }
 
 #[test]
@@ -510,7 +513,10 @@ fn dry_run_on_the_wave_only_annotates() {
             panic!()
         };
         assert!(
-            matches!(planned, PlannedAction::None | PlannedAction::Label { .. }),
+            matches!(
+                planned,
+                PlannedAction::None | PlannedAction::Comment { .. } | PlannedAction::Label { .. }
+            ),
             "dry run planned {planned:?}"
         );
     }

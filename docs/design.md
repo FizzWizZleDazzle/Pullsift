@@ -31,6 +31,13 @@ explicitly not a judgment of the change. Protected-paths and docs-only
 checks inject rules instead of closing. Per-repo config comes from
 `.github/pullsift.yml`, defaults conservative, dry-run on.
 
+Every scored PR gets one comment with its probability and evidence table,
+passing PRs included; `score_comments: false` restores silence on passes.
+The comment carries a hidden marker and rescores edit it in place, so a PR
+accumulates pushes, not comments. The comment is the install's heartbeat:
+without it, a healthy repo in dry run produces no visible output at all
+and the maintainer cannot tell working from dead.
+
 `ai_policy` encodes the repo's stance on AI assistance, which is
 maintainer taste and therefore config rather than a fitted weight:
 `welcome` zeroes the AI-provenance and AI-style rules (the dossier,

@@ -90,7 +90,7 @@ wave inoculates the rest.</p>
 
 <h2>What it decides</h2>
 <div class="tiers">
-  <div class="tier"><b>Pass</b><span>Nothing happens. The pull request goes to the queue.</span></div>
+  <div class="tier"><b>Pass</b><span>A score comment, nothing more. The pull request goes to the queue.</span></div>
   <div class="tier"><b>Label</b><span>Tagged for attention, no action taken.</span></div>
   <div class="tier"><b>Hold</b><span>Converted to draft with one question. A human sentence lifts it.</span></div>
   <div class="tier"><b>Close</b><span>Closed with the full evidence table and one reply to appeal.</span></div>
@@ -167,7 +167,8 @@ and leave dry run on for a week. Read what it would have done. Then decide.</p>
 <pre>dry_run: false
 challenge: true
 exempt_users: [trusted-bot]
-protected_paths: [README.md, LICENSE]</pre>
+protected_paths: [README.md, LICENSE]
+score_comments: true</pre>
 <p>Free for the first hundred scored pull requests per month, per install.
 Beyond that it is paid, because the cost of running it scales with volume.
 Public and private repositories cost the same.</p>

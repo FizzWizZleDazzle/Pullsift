@@ -36,6 +36,9 @@ pub enum AiPolicy {
 pub struct RepoConfig {
     /// Log and annotate only; take no enforcement action.
     pub dry_run: bool,
+    /// Post the score comment on every scored PR, including Pass. Off means
+    /// a passing PR gets no comment; enforcement tiers still comment.
+    pub score_comments: bool,
     pub archetype: Option<Archetype>,
     /// The repo's stance on AI-assisted contributions.
     pub ai_policy: AiPolicy,
@@ -59,6 +62,7 @@ impl Default for RepoConfig {
     fn default() -> Self {
         Self {
             dry_run: true,
+            score_comments: true,
             archetype: None,
             ai_policy: AiPolicy::default(),
             contribution_channel: None,
@@ -141,6 +145,7 @@ mod tests {
     fn defaults_are_conservative() {
         let c = RepoConfig::default();
         assert!(c.dry_run);
+        assert!(c.score_comments);
         assert!(c.archetype.is_none());
         assert!(c.protected_paths.contains(&"README.md".to_string()));
     }

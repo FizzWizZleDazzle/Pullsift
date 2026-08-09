@@ -33,11 +33,11 @@ for i in $(seq 1 40); do
 done
 echo "service healthy"
 
-send_pr() { # number author title body
-  local n=$1 author=$2 title=$3 body=$4
+send_pr() { # number author title body [action]
+  local n=$1 author=$2 title=$3 body=$4 action=${5:-opened}
   cat > "$DIR/payload.json" <<EOF
 {
-  "action": "opened",
+  "action": "$action",
   "repository": { "full_name": "e2e/sandbox" },
   "pull_request": {
     "number": $n,
@@ -87,16 +87,35 @@ for i in $(seq 1 40); do
   [ "$i" = 40 ] && { echo "no close call recorded; calls: $calls"; exit 1; }
 done
 
+# A rescore of the passing PR must edit its score comment, not stack a
+# second one.
+send_pr 101 casualdev "fix: strip quotes in parser" \
+  "The parser kept surrounding quotes when reading string values. Adds unquote and a regression test." \
+  synchronize
+for i in $(seq 1 40); do
+  calls=$(curl -sf "http://$API/_calls")
+  echo "$calls" | grep -q '"call":"update-comment"' && break
+  sleep 0.5
+  [ "$i" = 40 ] && { echo "no update-comment call recorded; calls: $calls"; exit 1; }
+done
+
 curl -sf "http://$API/_calls" > "$DIR/calls.json"
 CALLS_FILE="$DIR/calls.json" python3 - <<'EOF'
 import json, os
 calls = json.load(open(os.environ["CALLS_FILE"]))
 closes = [c for c in calls if c.get("call") == "close"]
 comments = [c for c in calls if c.get("call") == "comment"]
+labels = [c for c in calls if c.get("call") == "label"]
+updates = [c for c in calls if c.get("call") == "update-comment"]
 assert any(c["pr"] == 901 for c in closes), f"PR 901 must be closed: {calls}"
 assert not any(c["pr"] == 101 for c in closes), f"PR 101 must not be closed: {closes}"
-assert not any(c["pr"] == 101 for c in comments), f"PR 101 must be untouched: {comments}"
+assert not any(c["pr"] == 101 for c in labels), f"PR 101 must not be labeled: {labels}"
 evidence = [c for c in comments if c["pr"] == 901]
 assert evidence and "DOSSIER_SPAM_LABELS" in json.dumps(evidence), "close comment must carry evidence"
-print("PASS: PR 901 closed with evidence, PR 101 untouched")
+scores = [c for c in comments if c["pr"] == 101]
+assert len(scores) == 1, f"PR 101 must get exactly one score comment: {scores}"
+assert "pullsift-score" in json.dumps(scores), f"score comment must carry the marker: {scores}"
+assert "No action taken" in json.dumps(scores), f"score comment must state the verdict: {scores}"
+assert updates, f"the rescore must edit the score comment: {calls}"
+print("PASS: PR 901 closed with evidence, PR 101 scored with one edited comment")
 EOF

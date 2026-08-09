@@ -175,7 +175,7 @@ pub fn process(
         None
     };
 
-    let planned = actions::plan(&verdict, challenge_comment, cfg.dry_run);
+    let planned = actions::plan(&verdict, challenge_comment, cfg.dry_run, cfg.score_comments);
     Outcome::Scored { verdict, planned }
 }
 
@@ -608,7 +608,7 @@ mod tests {
         };
         assert!(matches!(
             planned,
-            PlannedAction::Label { .. } | PlannedAction::None
+            PlannedAction::Label { .. } | PlannedAction::Comment { .. } | PlannedAction::None
         ));
     }
 
