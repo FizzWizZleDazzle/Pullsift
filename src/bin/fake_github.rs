@@ -13,12 +13,23 @@ use axum::{Json, Router};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
+#[derive(Default)]
+struct StoredComment {
+    id: u64,
+    repo: String,
+    pr: u64,
+    body: String,
+}
+
 #[derive(Clone, Default)]
-struct Calls(Arc<Mutex<Vec<Value>>>);
+struct Calls {
+    log: Arc<Mutex<Vec<Value>>>,
+    comments: Arc<Mutex<Vec<StoredComment>>>,
+}
 
 impl Calls {
     fn push(&self, v: Value) {
-        self.0.lock().unwrap().push(v);
+        self.log.lock().unwrap().push(v);
     }
 }
 
@@ -31,7 +42,14 @@ async fn main() {
         .route("/repos/{owner}/{repo}/pulls/{n}", get(pull).patch(close))
         .route("/repos/{owner}/{repo}/pulls/{n}/files", get(files))
         .route("/repos/{owner}/{repo}/pulls/{n}/commits", get(commits))
-        .route("/repos/{owner}/{repo}/issues/{n}/comments", post(comment))
+        .route(
+            "/repos/{owner}/{repo}/issues/{n}/comments",
+            get(list_comments).post(comment),
+        )
+        .route(
+            "/repos/{owner}/{repo}/issues/comments/{id}",
+            axum::routing::patch(update_comment),
+        )
         .route("/repos/{owner}/{repo}/issues/{n}/labels", post(label))
         .route("/repos/{owner}/{repo}/contents/{*path}", get(contents))
         .route("/graphql", post(graphql))
@@ -44,7 +62,7 @@ async fn main() {
 }
 
 async fn dump(State(calls): State<Calls>) -> Json<Value> {
-    Json(Value::Array(calls.0.lock().unwrap().clone()))
+    Json(Value::Array(calls.log.lock().unwrap().clone()))
 }
 
 async fn token() -> Json<Value> {
@@ -125,7 +143,47 @@ async fn comment(
     calls.push(
         json!({ "call": "comment", "repo": format!("{owner}/{repo}"), "pr": n, "body": body }),
     );
-    Json(json!({ "id": 1 }))
+    let mut comments = calls.comments.lock().unwrap();
+    let id = comments.len() as u64 + 1;
+    comments.push(StoredComment {
+        id,
+        repo: format!("{owner}/{repo}"),
+        pr: n,
+        body: body["body"].as_str().unwrap_or("").to_string(),
+    });
+    Json(json!({ "id": id }))
+}
+
+async fn list_comments(
+    State(calls): State<Calls>,
+    Path((owner, repo, n)): Path<(String, String, u64)>,
+) -> Json<Value> {
+    let repo = format!("{owner}/{repo}");
+    let comments: Vec<Value> = calls
+        .comments
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|c| c.repo == repo && c.pr == n)
+        .map(|c| json!({ "id": c.id, "body": c.body }))
+        .collect();
+    Json(Value::Array(comments))
+}
+
+async fn update_comment(
+    State(calls): State<Calls>,
+    Path((owner, repo, id)): Path<(String, String, u64)>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    calls.push(
+        json!({ "call": "update-comment", "repo": format!("{owner}/{repo}"),
+                       "comment_id": id, "body": body }),
+    );
+    let mut comments = calls.comments.lock().unwrap();
+    if let Some(c) = comments.iter_mut().find(|c| c.id == id) {
+        c.body = body["body"].as_str().unwrap_or("").to_string();
+    }
+    Json(json!({ "id": id }))
 }
 
 async fn label(

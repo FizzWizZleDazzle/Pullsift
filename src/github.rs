@@ -178,6 +178,71 @@ impl Client {
         Ok(())
     }
 
+    /// Id of the first comment on the PR whose body carries `marker`; None
+    /// when the bot has not commented yet. First page only: the score
+    /// comment is posted at the top of a PR's life.
+    pub async fn find_comment(
+        &self,
+        token: &str,
+        repo: &str,
+        number: u64,
+        marker: &str,
+    ) -> Result<Option<u64>> {
+        let url = format!(
+            "{}/repos/{repo}/issues/{number}/comments?per_page=100",
+            self.base
+        );
+        let resp: Value = self
+            .http
+            .get(url)
+            .bearer_auth(token)
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(resp.as_array().and_then(|cs| {
+            cs.iter()
+                .find(|c| c["body"].as_str().is_some_and(|b| b.contains(marker)))
+                .and_then(|c| c["id"].as_u64())
+        }))
+    }
+
+    pub async fn update_comment(
+        &self,
+        token: &str,
+        repo: &str,
+        comment_id: u64,
+        body: &str,
+    ) -> Result<()> {
+        let url = format!("{}/repos/{repo}/issues/comments/{comment_id}", self.base);
+        self.http
+            .patch(url)
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "body": body }))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    /// Post `body` as the marker-carrying comment, editing the existing one
+    /// when a rescore already left it there.
+    pub async fn upsert_comment(
+        &self,
+        token: &str,
+        repo: &str,
+        number: u64,
+        marker: &str,
+        body: &str,
+    ) -> Result<()> {
+        match self.find_comment(token, repo, number, marker).await? {
+            Some(id) => self.update_comment(token, repo, id, body).await,
+            None => self.post_comment(token, repo, number, body).await,
+        }
+    }
+
     pub async fn add_label(&self, token: &str, repo: &str, number: u64, label: &str) -> Result<()> {
         let url = format!("{}/repos/{repo}/issues/{number}/labels", self.base);
         self.http

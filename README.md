@@ -27,6 +27,7 @@ challenge: true
 contribution_channel: "the mailing list"
 exempt_users: [trusted-bot]
 ai_policy: neutral
+score_comments: true
 ```
 
 `ai_policy` sets the repo's stance on AI-assisted contributions, because
@@ -40,6 +41,9 @@ provenance marker escalates).
 
 - Scores every PR with an explainable rule engine: each signal contributes
   a weighted value, and every verdict carries the full evidence table.
+- Posts the score on every PR it scores, passing ones included, as one
+  comment it edits on rescore rather than reposts. Set
+  `score_comments: false` to keep passing PRs comment-free.
 - Reads the code itself, not just the prose around it: duplicated blocks,
   one value hardcoded in several places, helpers nothing calls, added code
   in a different idiom from the file it lands in, a commit cadence too

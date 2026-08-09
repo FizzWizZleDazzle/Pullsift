@@ -6,7 +6,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use chrono::Utc;
-use pullsift::actions::{PlannedAction, SUSPECT_LABEL, action_name};
+use pullsift::actions::{PlannedAction, SCORE_COMMENT_MARKER, SUSPECT_LABEL, action_name};
 use pullsift::challenge::{self, ChallengeState};
 use pullsift::cluster::ClusterStore;
 use pullsift::config::RepoConfig;
@@ -329,6 +329,16 @@ async fn execute(
     let name = action_name(&planned).to_string();
     match &planned {
         PlannedAction::None => {}
+        PlannedAction::Comment { evidence_comment } => {
+            gh.upsert_comment(
+                token,
+                &ev.repo,
+                ev.number,
+                SCORE_COMMENT_MARKER,
+                evidence_comment,
+            )
+            .await?;
+        }
         PlannedAction::Label { evidence_comment } => {
             gh.add_label(token, &ev.repo, ev.number, SUSPECT_LABEL)
                 .await?;
