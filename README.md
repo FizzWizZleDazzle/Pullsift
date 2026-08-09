@@ -16,22 +16,10 @@ inoculates the rest.
 
 ## Quick start
 
-Run the service with a Postgres database and a GitHub App registration:
-
-```
-DATABASE_URL=postgres://... \
-WEBHOOK_SECRET=... \
-CANARY_SALT=... \
-GITHUB_APP_ID=... \
-GITHUB_PRIVATE_KEY_PATH=app.pem \
-GITHUB_INSTALLATION_ID=... \
-cargo run --release
-```
-
-Point the App's webhook at `/webhook` with `pull_request` and
-`issue_comment` events. Per-repo settings live in
-`.github/pullsift.yml`; every install starts in dry-run, which annotates
-what it would have done without acting.
+Install the hosted GitHub App on a repository and leave dry run on for a
+week: every install starts in dry-run, which annotates what it would have
+done without acting. Read what it would have done, then decide. Per-repo
+settings live in `.github/pullsift.yml`.
 
 ```yaml
 dry_run: false
@@ -86,7 +74,23 @@ provenance marker escalates).
   itself as a signal.
 - Tier thresholds are calibrated on a mined corpus of real PRs; treat
   close-tier automation as opt-in until your repo has feedback history.
-- The App is not yet listed on the GitHub Marketplace; running it today
-  means registering your own GitHub App and pointing it at a deployment.
+
+## Self-hosting
+
+Run the service yourself with a Postgres database and a GitHub App
+registration:
+
+```
+DATABASE_URL=postgres://... \
+WEBHOOK_SECRET=... \
+CANARY_SALT=... \
+GITHUB_APP_ID=... \
+GITHUB_PRIVATE_KEY_PATH=app.pem \
+GITHUB_INSTALLATION_ID=... \
+cargo run --release
+```
+
+Point the App's webhook at `/webhook` with `pull_request` and
+`issue_comment` events.
 
 Deeper design: [docs/design.md](docs/design.md).
