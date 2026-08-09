@@ -4,7 +4,7 @@
 //! No ML framework; the rule vectors are small and the corpus fits in
 //! memory. Maintainer corrections enter as sample weights.
 
-use crate::engine::{sigmoid, Fire, Thresholds, Weights};
+use crate::engine::{Fire, Thresholds, Weights, sigmoid};
 use std::collections::BTreeMap;
 
 /// A labeled example: the rules that fired, whether it was slop, and a

@@ -8,8 +8,8 @@ use crate::fit::Example;
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
-use sqlx::postgres::PgPool;
 use sqlx::Row;
+use sqlx::postgres::PgPool;
 use std::collections::HashMap;
 use std::sync::Mutex;
 

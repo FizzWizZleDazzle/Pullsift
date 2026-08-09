@@ -12,11 +12,11 @@
 use chrono::{DateTime, Utc};
 use pullsift::cluster::ClusterStore;
 use pullsift::config::RepoConfig;
-use pullsift::dossier::{parse_dossier, scan_markers, DossierFacts};
+use pullsift::dossier::{DossierFacts, parse_dossier, scan_markers};
 use pullsift::engine::{Fire, Weights};
-use pullsift::fit::{auc, fit, observed_fpr, thresholds_at_fpr, Example, FitOptions};
+use pullsift::fit::{Example, FitOptions, auc, fit, observed_fpr, thresholds_at_fpr};
 use pullsift::hashing::fnv1a64;
-use pullsift::pipeline::{process, Outcome, ScoreInputs};
+use pullsift::pipeline::{Outcome, ScoreInputs, process};
 use pullsift::webhook::PrEvent;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -61,6 +61,10 @@ struct CommitRec {
     email: String,
     #[serde(default)]
     message: String,
+    /// Author timestamp. Absent on records mined before the field existed;
+    /// the authoring-rate rule abstains for those rather than guessing.
+    #[serde(default)]
+    date: String,
 }
 
 struct Scored {
@@ -148,10 +152,10 @@ fn load_detector(dir: &std::path::Path) -> BTreeMap<String, f64> {
         return out;
     };
     for line in text.lines() {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-            if let (Some(id), Some(p)) = (v["id"].as_str(), v["probability"].as_f64()) {
-                out.insert(id.to_string(), p);
-            }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line)
+            && let (Some(id), Some(p)) = (v["id"].as_str(), v["probability"].as_f64())
+        {
+            out.insert(id.to_string(), p);
         }
     }
     out
@@ -216,6 +220,12 @@ fn replay(
         facts.search_blocked = r.search_blocked;
         let commit_emails: Vec<String> = r.commits.iter().map(|c| c.email.clone()).collect();
         let commit_messages: Vec<String> = r.commits.iter().map(|c| c.message.clone()).collect();
+        let commit_times: Vec<chrono::DateTime<Utc>> = r
+            .commits
+            .iter()
+            .filter_map(|c| chrono::DateTime::parse_from_rfc3339(&c.date).ok())
+            .map(|t| t.with_timezone(&Utc))
+            .collect();
         let (e, t, f) = scan_markers(&commit_emails, &commit_messages, &r.body);
         facts.agent_email |= e;
         facts.agent_trailer |= t;
@@ -228,6 +238,7 @@ fn replay(
             changed_paths: r.files.clone(),
             commit_emails,
             commit_messages,
+            commit_times,
             dossier: facts,
             pr_labels: vec![],
             template: None,
@@ -269,11 +280,14 @@ fn main() {
     let dry = args.iter().any(|a| a == "--dry");
     let score_only = args.iter().any(|a| a == "--score-only");
     let mut emit: Option<String> = None;
+    let mut fires_path: Option<String> = None;
     let mut dir: Option<String> = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         if a == "--emit" {
             emit = it.next().cloned();
+        } else if a == "--fires" {
+            fires_path = it.next().cloned();
         } else if !a.starts_with("--") {
             dir = Some(a.clone());
         }
@@ -332,6 +346,32 @@ fn main() {
             println!("wrote predictions to {path}");
         }
         return;
+    }
+
+    // --fires PATH: every record's raw fires, with its label and source.
+    // Aggregate coverage answers "does this rule separate on this corpus";
+    // it cannot answer "does it separate on this slice of it", which is
+    // the question whenever a lane only applies to part of the corpus.
+    if let Some(path) = &fires_path {
+        let table = pullsift::tokenscore::TokenTable::embedded();
+        let refs: Vec<&Scored> = scored.iter().collect();
+        let mut lines = String::new();
+        for (ex, s) in token_examples(&refs, &table).iter().zip(&refs) {
+            let fired: BTreeMap<&str, f64> = ex
+                .fires
+                .iter()
+                .filter(|f| f.value > 0.0)
+                .map(|f| (f.rule.as_str(), f.value))
+                .collect();
+            lines.push_str(&format!(
+                "{}\n",
+                serde_json::json!({
+                    "id": s.id, "slop": s.is_slop, "source": s.source, "fires": fired,
+                })
+            ));
+        }
+        std::fs::write(path, lines).unwrap();
+        println!("wrote fires to {path}");
     }
 
     // Cross-validation, author-grouped.
@@ -407,10 +447,9 @@ fn main() {
     ] {
         if let (Some(prior), Some(fitted)) =
             (incumbent.rules.get(rule), final_w.rules.get_mut(rule))
+            && *fitted < *prior
         {
-            if *fitted < *prior {
-                *fitted = *prior;
-            }
+            *fitted = *prior;
         }
     }
 
@@ -484,6 +523,40 @@ fn main() {
         .map(|(r, _)| r.as_str())
         .collect();
     println!("near-zero rules: {dead:?}");
+
+    // Coverage. A weight only means something where the rule fires, so a
+    // near-zero weight has two very different causes: the rule fires and
+    // does not separate, or it never fires and was never priced at all.
+    // The empirical log-ratio of fire rates says which.
+    let n_pos = all.iter().filter(|e| e.is_slop).count();
+    let n_neg = all.len() - n_pos;
+    let mut cov: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+    for e in &all {
+        for f in &e.fires {
+            if f.value <= 0.0 {
+                continue;
+            }
+            let c = cov.entry(f.rule.as_str()).or_default();
+            if e.is_slop {
+                c.0 += 1;
+            } else {
+                c.1 += 1;
+            }
+        }
+    }
+    let mut rows: Vec<(&str, usize, usize, f64)> = cov
+        .iter()
+        .map(|(r, (p, n))| {
+            let rate_p = (*p as f64 + 0.5) / (n_pos as f64 + 1.0);
+            let rate_n = (*n as f64 + 0.5) / (n_neg as f64 + 1.0);
+            (*r, *p, *n, (rate_p / rate_n).ln())
+        })
+        .collect();
+    rows.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
+    println!("\nrule coverage ({n_pos} slop, {n_neg} ham):");
+    for (r, p, n, llr) in &rows {
+        println!("  {r:24} slop {p:4}  ham {n:5}  llr {llr:+.2}");
+    }
 
     // Ham false positives at each tier, for eyeballing. `all` is aligned
     // with `scored` and carries the token-model fire.

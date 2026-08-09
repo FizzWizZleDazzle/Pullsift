@@ -4,7 +4,7 @@
 
 use crate::actions::{self, PlannedAction};
 use crate::challenge;
-use crate::cluster::{cluster_rules, ClusterStore, PrSignature};
+use crate::cluster::{ClusterStore, PrSignature, cluster_rules};
 use crate::config::RepoConfig;
 use crate::diffsig;
 use crate::dossier::DossierFacts;
@@ -23,6 +23,9 @@ pub struct ScoreInputs<'a> {
     pub changed_paths: Vec<String>,
     pub commit_emails: Vec<String>,
     pub commit_messages: Vec<String>,
+    /// Author timestamps of the PR's commits, in whatever order the API
+    /// returned them. Empty when unavailable; the rate rule then abstains.
+    pub commit_times: Vec<DateTime<Utc>>,
     pub dossier: DossierFacts,
     pub pr_labels: Vec<String>,
     pub template: Option<&'a str>,
@@ -84,15 +87,19 @@ pub fn process(
     if diffsig::whitespace_only(inputs.diff) {
         fires.push(Fire::hit("WHITESPACE_ONLY"));
     }
-    if let Some(density) = diffsig::comment_density(inputs.diff) {
-        if density >= 0.35 {
-            fires.push(Fire::new("COMMENT_HEAVY", density.min(1.0)));
-        }
+    if let Some(density) = diffsig::comment_density(inputs.diff)
+        && density >= 0.35
+    {
+        fires.push(Fire::new("COMMENT_HEAVY", density.min(1.0)));
     }
     if grounding_miss(&ev.body, inputs.diff, &inputs.changed_paths) {
         fires.push(Fire::hit("GROUNDING_MISS"));
     }
+    if let Some(rate) = authoring_rate(&inputs.commit_times, ev.additions) {
+        fires.push(Fire::new("AUTHORING_RATE", rate));
+    }
     fires.extend(crate::codeslop::rules(inputs.diff));
+    fires.extend(crate::codestruct::rules(inputs.diff));
 
     // Lane A: signatures and clustering.
     let prose = format!("{}\n{}", ev.title, ev.body);
@@ -172,6 +179,34 @@ pub fn process(
     Outcome::Scored { verdict, planned }
 }
 
+/// Lines written per hour, across the span of the pull request's own
+/// commits. Thousands of lines an hour is a machine's cadence, not a
+/// person's, and that is all this measures: it says how the code was
+/// produced, not whether it is any good. Plenty of generated work is
+/// worth merging, so this carries one fitted weight among many and never
+/// reaches a tier alone.
+///
+/// Needs at least two commits to have a span at all. A single commit
+/// carries no information about how long the work took, and guessing from
+/// the gap to the pull request would punish people who push promptly.
+fn authoring_rate(commit_times: &[DateTime<Utc>], additions: u64) -> Option<f64> {
+    const MIN_ADDITIONS: u64 = 200;
+    /// Lines per hour at which the rule saturates.
+    const FAST: f64 = 4_000.0;
+
+    if commit_times.len() < 2 || additions < MIN_ADDITIONS {
+        return None;
+    }
+    let first = commit_times.iter().min()?;
+    let last = commit_times.iter().max()?;
+    let hours = (*last - *first).num_seconds() as f64 / 3600.0;
+    // Commits sharing a timestamp give no span to divide by; treat the
+    // whole batch as one minute of work rather than dividing by zero.
+    let hours = hours.max(1.0 / 60.0);
+    let rate = additions as f64 / hours;
+    (rate >= 500.0).then(|| (rate.ln() / FAST.ln()).clamp(0.0, 1.0))
+}
+
 /// The curl tell: a body that name-drops code the PR never touches.
 /// Collect backticked identifier-shaped mentions (calls, paths, symbols)
 /// from the body; fire only when there are at least two and none of them
@@ -211,6 +246,51 @@ fn grounding_miss(body: &str, diff: &str, changed_paths: &[String]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn authoring_rate_reads_machine_cadence_not_size() {
+        use chrono::TimeZone;
+        let at = |mins: i64| Utc.timestamp_opt(1_750_000_000 + mins * 60, 0).unwrap();
+
+        // Three thousand lines across eleven minutes.
+        assert!(super::authoring_rate(&[at(0), at(4), at(11)], 3_000).unwrap() > 0.8);
+        // The same change over two days is a person working.
+        assert!(super::authoring_rate(&[at(0), at(2880)], 3_000).is_none());
+        // A big change alone says nothing without a span to divide by.
+        assert!(super::authoring_rate(&[at(0)], 9_000).is_none());
+        // Fast, but too small to mean anything.
+        assert!(super::authoring_rate(&[at(0), at(1)], 30).is_none());
+        // Commits sharing one timestamp must not divide by zero.
+        assert!(super::authoring_rate(&[at(5), at(5)], 2_000).unwrap() > 0.0);
+    }
+
+    #[test]
+    fn enormous_diffs_fire_unless_the_bulk_is_unauthored() {
+        use crate::policy::{PolicyOutcome, PrMeta, evaluate};
+        let meta = |additions: u64, paths: Vec<String>| PrMeta {
+            author: "someone",
+            title: "big change",
+            head_ref: "feature",
+            changed_paths: Box::leak(paths.into_boxed_slice()),
+            is_first_time_contributor: false,
+            body: "This adds the thing.",
+            additions,
+            deletions: 0,
+            commit_count: 1,
+            template: None,
+        };
+        let fired = |m: PrMeta| match evaluate(&RepoConfig::default(), &m) {
+            PolicyOutcome::ExtraRules(r) => r.iter().any(|f| f.rule == "DIFF_ENORMOUS"),
+            _ => false,
+        };
+        assert!(fired(meta(40_000, vec!["src/everything.rs".into()])));
+        assert!(!fired(meta(400, vec!["src/small.rs".into()])));
+        // A vendored tree is legitimately enormous.
+        assert!(!fired(meta(
+            40_000,
+            vec!["vendor/lib.go".into(), "go.sum".into(), "src/one.go".into()]
+        )));
+    }
+
     #[test]
     fn grounding_miss_fires_only_on_wholesale_fabrication() {
         let diff = "+fn unquote(s: &str) -> &str { s }\n";
@@ -284,6 +364,7 @@ mod tests {
             changed_paths: vec!["README.md".into()],
             commit_emails: vec!["someone@example.com".into()],
             commit_messages: vec!["update readme".into()],
+            commit_times: vec![],
             dossier: DossierFacts::default(),
             pr_labels: vec![],
             template: None,

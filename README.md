@@ -52,6 +52,12 @@ provenance marker escalates).
 
 - Scores every PR with an explainable rule engine: each signal contributes
   a weighted value, and every verdict carries the full evidence table.
+- Reads the code itself, not just the prose around it: duplicated blocks,
+  one value hardcoded in several places, helpers nothing calls, added code
+  in a different idiom from the file it lands in, a commit cadence too
+  fast for a person, and diffs too large for anyone to review. Not every
+  generated PR reads generated, and these signals catch the ones that do
+  not.
 - Clusters incoming PRs by diff and prose similarity and detects arrival
   bursts, so a tutorial flood is caught as one campaign even when every
   author is a brand-new account.

@@ -70,6 +70,55 @@ targets for the maintainer's explicit choice.
 New rules ship dark (zero weight) and get priced by the tuner before they
 influence verdicts.
 
+## The code lane (`codeslop.rs`, `codestruct.rs`)
+
+Prose tells catch a pull request that reads generated. They say nothing
+about the one that reads competent and is not: planned, formatted,
+plausible, and still work to undo. `codeslop.rs` reads the surface of the
+added lines (placeholder bodies, comments that restate the line below,
+generic identifier vocabulary). `codestruct.rs` reads their structure:
+
+- CODE_DUP_BLOCK and CODE_DUP_FUNC: five-line windows, and whole function
+  bodies, repeated inside one pull request. Pasting instead of factoring
+  is the most common shape of planned generated code.
+- CODE_REPEAT_LITERAL and CODE_MAGIC_NUMBER: the same value written into
+  three places, and unnamed numbers by density. The defect is not the
+  value, it is that changing it once leaves the other copies wrong.
+- CODE_HARDCODED_CONFIG: endpoints, hosts, paths and timeouts inlined
+  where configuration belongs. Lines that read the environment are
+  exempt: that is the shape being asked for.
+- CODE_BLANKET_CATCH: catch-everything handlers, weighted by how many
+  discard what they caught.
+- CODE_DEAD_HELPER: private functions the change defines and never calls,
+  and only when the same change does wire up other new functions. A diff
+  is a keyhole; without that condition the rule fires on any helper
+  called from an unchanged file.
+- CODE_STYLE_DRIFT: added code written in a different idiom from the file
+  it lands in, across naming, indentation, quoting and comment habit. A
+  diff carries the surrounding lines, so the file's own conventions are
+  the comparison. Two axes must diverge before it fires.
+- CODE_DOC_SCAFFOLD: a full parameter table on every added function,
+  including the trivial ones. Taste rather than defect, so `ai_policy:
+  welcome` zeroes it along with the other AI-style rules.
+
+All of it reads production source only. Tests, fixtures, examples,
+generated code and data files repeat themselves and hardcode values for
+good reasons. The analysis is lexical over a unified diff, not a parsed
+tree, and it sees only what the diff shows; a tree-sitter upgrade would
+deepen it, and the research caps cross-language code classification well
+short of the prose lane either way. Below twenty added production lines
+the whole lane abstains.
+
+The corpus bounds what these rules can be worth: the mining sources that
+supply most of it select for drive-by edits, where the median record
+carries a single line of production code, and where the label is a merge
+decision that says nothing about code a reviewer fixed before merging.
+`scripts/mine_corpus.py` addresses both with an `aipolicy-*` slice mined
+from projects that published what they will not accept from a generator,
+found by searching contributing guides for the policy text. Both labels
+come from the same repositories under the same code filter, so the slice
+measures the pull request rather than the venue.
+
 An optional self-hosted AI-text detector (`scripts/detector_server.py`,
 DeBERTa-based, MIT-licensed weights) feeds a single DETECTOR_SCORE rule
 via `DETECTOR_URL`. It scores only the prose of title and body, with

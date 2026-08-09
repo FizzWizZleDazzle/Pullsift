@@ -14,7 +14,7 @@
 //! version row in the database; rollback is flipping the active row.
 
 use crate::engine::Weights;
-use crate::fit::{auc, fit, thresholds_at_fpr, Example, FitOptions};
+use crate::fit::{Example, FitOptions, auc, fit, thresholds_at_fpr};
 
 /// Refuse to learn from less than this many examples.
 pub const MIN_EXAMPLES: usize = 200;

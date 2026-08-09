@@ -129,10 +129,10 @@ impl ClusterStore {
                         if seen.contains(&other) {
                             continue;
                         }
-                        if let Some(om) = &self.entries[other].text_min {
-                            if min.jaccard(om) >= crate::textsig::NEAR_JACCARD {
-                                self.uf.union(other, id);
-                            }
+                        if let Some(om) = &self.entries[other].text_min
+                            && min.jaccard(om) >= crate::textsig::NEAR_JACCARD
+                        {
+                            self.uf.union(other, id);
                         }
                         seen.push(other);
                     }
@@ -392,9 +392,11 @@ mod tests {
         assert!(v.burst > 0.9, "burst {}", v.burst);
         assert!(v.style_cohesion > 0.9, "cohesion {}", v.style_cohesion);
         let rules = cluster_rules(&v);
-        assert!(rules
-            .iter()
-            .any(|f| f.rule == "CLUSTER_BURST" && f.value > 0.9));
+        assert!(
+            rules
+                .iter()
+                .any(|f| f.rule == "CLUSTER_BURST" && f.value > 0.9)
+        );
         assert!(rules.iter().any(|f| f.rule == "CLUSTER_SIZE_LOG"));
     }
 

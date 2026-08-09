@@ -116,13 +116,15 @@ impl Client {
             .unwrap_or_default())
     }
 
-    /// Commit author emails and messages for marker scanning.
+    /// Commit author emails and messages for marker scanning, with author
+    /// timestamps for the authoring-rate rule.
+    #[allow(clippy::type_complexity)]
     pub async fn pr_commits(
         &self,
         token: &str,
         repo: &str,
         number: u64,
-    ) -> Result<(Vec<String>, Vec<String>)> {
+    ) -> Result<(Vec<String>, Vec<String>, Vec<chrono::DateTime<chrono::Utc>>)> {
         let url = format!(
             "{}/repos/{repo}/pulls/{number}/commits?per_page=100",
             self.base
@@ -139,6 +141,7 @@ impl Client {
             .await?;
         let mut emails = Vec::new();
         let mut messages = Vec::new();
+        let mut times = Vec::new();
         if let Some(commits) = resp.as_array() {
             for c in commits {
                 if let Some(e) = c["commit"]["author"]["email"].as_str() {
@@ -147,9 +150,14 @@ impl Client {
                 if let Some(m) = c["commit"]["message"].as_str() {
                     messages.push(m.to_string());
                 }
+                if let Some(d) = c["commit"]["author"]["date"].as_str()
+                    && let Ok(t) = chrono::DateTime::parse_from_rfc3339(d)
+                {
+                    times.push(t.with_timezone(&chrono::Utc));
+                }
             }
         }
-        Ok((emails, messages))
+        Ok((emails, messages, times))
     }
 
     pub async fn post_comment(

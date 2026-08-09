@@ -1,6 +1,6 @@
 //! Lane C: repo policy. Runs before any scoring; the cheapest lane wins.
 
-use crate::config::{path_matches, Archetype, RepoConfig};
+use crate::config::{Archetype, RepoConfig, path_matches};
 use crate::engine::Fire;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -23,6 +23,44 @@ pub struct PrMeta<'a> {
     pub commit_count: u64,
     /// The repo's PR template, when it has one.
     pub template: Option<&'a str>,
+}
+
+/// Added lines at which a change stops being reviewable, and the point
+/// past which more lines say nothing new.
+const ENORMOUS_FLOOR: u64 = 2_000;
+const ENORMOUS_CEIL: u64 = 50_000;
+
+/// Paths whose size is not the contributor's writing: dependency trees,
+/// lockfiles, build output, generated bindings.
+fn mostly_unauthored(paths: &[String]) -> bool {
+    if paths.is_empty() {
+        return false;
+    }
+    const MARKS: &[&str] = &[
+        "vendor/",
+        "node_modules/",
+        "third_party/",
+        "/dist/",
+        "/build/",
+        ".min.js",
+        ".lock",
+        "lock.json",
+        ".sum",
+        "generated",
+        ".pb.go",
+        "_pb2.py",
+        ".snap",
+        "po/",
+        ".po",
+    ];
+    let hits = paths
+        .iter()
+        .filter(|p| {
+            let p = p.to_lowercase();
+            MARKS.iter().any(|m| p.contains(m))
+        })
+        .count();
+    hits * 2 > paths.len()
 }
 
 pub fn evaluate(config: &RepoConfig, pr: &PrMeta) -> PolicyOutcome {
@@ -63,10 +101,10 @@ pub fn evaluate(config: &RepoConfig, pr: &PrMeta) -> PolicyOutcome {
 
     if pr.body.trim().is_empty() {
         rules.push(Fire::hit("BODY_EMPTY"));
-    } else if let Some(template) = pr.template {
-        if template_ignored(template, pr.body) {
-            rules.push(Fire::hit("TEMPLATE_IGNORED"));
-        }
+    } else if let Some(template) = pr.template
+        && template_ignored(template, pr.body)
+    {
+        rules.push(Fire::hit("TEMPLATE_IGNORED"));
     }
 
     rules.extend(shape_rules(pr));
@@ -127,6 +165,17 @@ pub fn shape_rules(pr: &PrMeta) -> Vec<Fire> {
         if !touches_tests {
             out.push(Fire::hit("BODY_DIFF_MISMATCH"));
         }
+    }
+
+    // A change nobody could review. The joke submission is one shape of
+    // this and a generator emptying itself into a branch is another; both
+    // cost a maintainer the same thing. Vendored trees, lockfiles and
+    // generated output are legitimately enormous, so a diff that is mostly
+    // those does not count.
+    if pr.additions >= ENORMOUS_FLOOR && !mostly_unauthored(pr.changed_paths) {
+        let span = (ENORMOUS_CEIL as f64).ln() - (ENORMOUS_FLOOR as f64).ln();
+        let over = (pr.additions as f64).ln() - (ENORMOUS_FLOOR as f64).ln();
+        out.push(Fire::new("DIFF_ENORMOUS", (over / span).clamp(0.0, 1.0)));
     }
 
     // An essay over a trivial diff.

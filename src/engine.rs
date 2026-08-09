@@ -228,20 +228,24 @@ mod tests {
 
     #[test]
     fn thresholds_validate_ordering() {
-        assert!(Thresholds {
-            label: 0.3,
-            hold: 0.7,
-            close: 0.95
-        }
-        .validate()
-        .is_ok());
-        assert!(Thresholds {
-            label: 0.8,
-            hold: 0.7,
-            close: 0.95
-        }
-        .validate()
-        .is_err());
+        assert!(
+            Thresholds {
+                label: 0.3,
+                hold: 0.7,
+                close: 0.95
+            }
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            Thresholds {
+                label: 0.8,
+                hold: 0.7,
+                close: 0.95
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]

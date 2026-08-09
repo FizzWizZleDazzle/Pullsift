@@ -73,10 +73,10 @@ pub fn evaluate_reply(state: &ChallengeState, reply: &str) -> ChallengeState {
 
 /// Advance a pending challenge past its timeout.
 pub fn evaluate_timeout(state: &ChallengeState, now: DateTime<Utc>) -> ChallengeState {
-    if let ChallengeState::Pending { posted_at, .. } = state {
-        if now - *posted_at >= Duration::hours(TIMEOUT_HOURS) {
-            return ChallengeState::FailedTimeout;
-        }
+    if let ChallengeState::Pending { posted_at, .. } = state
+        && now - *posted_at >= Duration::hours(TIMEOUT_HOURS)
+    {
+        return ChallengeState::FailedTimeout;
     }
     state.clone()
 }

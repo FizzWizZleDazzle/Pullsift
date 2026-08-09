@@ -167,35 +167,36 @@ impl DossierFacts {
             out.push(Fire::hit("GENERATION_FOOTER"));
         }
 
-        if let Some(secs) = self.fork_to_pr_secs {
-            if self.additions >= 50 && (0..3600).contains(&secs) {
-                // 0s -> 1.0, one hour -> 0.0.
-                out.push(Fire::new("VELOCITY_FORK_TO_PR", 1.0 - secs as f64 / 3600.0));
-            }
+        if let Some(secs) = self.fork_to_pr_secs
+            && self.additions >= 50
+            && (0..3600).contains(&secs)
+        {
+            // 0s -> 1.0, one hour -> 0.0.
+            out.push(Fire::new("VELOCITY_FORK_TO_PR", 1.0 - secs as f64 / 3600.0));
         }
 
-        if let Some(median) = self.median_reply_secs {
-            if median < 60 {
-                out.push(Fire::hit("REPLY_INSTANT"));
-            }
+        if let Some(median) = self.median_reply_secs
+            && median < 60
+        {
+            out.push(Fire::hit("REPLY_INSTANT"));
         }
 
-        if let Some(entropy) = self.commit_hour_entropy {
-            if entropy > 0.97 {
-                out.push(Fire::new("HOUR_ENTROPY_FLAT", entropy));
-            }
+        if let Some(entropy) = self.commit_hour_entropy
+            && entropy > 0.97
+        {
+            out.push(Fire::new("HOUR_ENTROPY_FLAT", entropy));
         }
 
         // Smooth decay with a 90-day half-life rather than a 30-day cliff:
         // wave accounts are often months old, created for an earlier
         // campaign, and a cliff throws that separation away.
-        if let Some(age) = self.account_age_days {
-            if age < 365 {
-                out.push(Fire::new(
-                    "ACCOUNT_NEW",
-                    1.0 / (1.0 + age.max(0) as f64 / 90.0),
-                ));
-            }
+        if let Some(age) = self.account_age_days
+            && age < 365
+        {
+            out.push(Fire::new(
+                "ACCOUNT_NEW",
+                1.0 / (1.0 + age.max(0) as f64 / 90.0),
+            ));
         }
 
         // Opaque account: nothing public to know the person by.
@@ -222,10 +223,10 @@ impl DossierFacts {
                     *counts.entry(t).or_default() += 1;
                 }
             }
-            if let Some((_, &max)) = counts.iter().max_by_key(|(_, c)| **c) {
-                if max >= 3 {
-                    out.push(Fire::new("DOSSIER_TITLE_REPEAT", max as f64 / total as f64));
-                }
+            if let Some((_, &max)) = counts.iter().max_by_key(|(_, c)| **c)
+                && max >= 3
+            {
+                out.push(Fire::new("DOSSIER_TITLE_REPEAT", max as f64 / total as f64));
             }
         }
 
@@ -303,20 +304,20 @@ pub fn parse_dossier(login: &str, response: &Value, now: DateTime<Utc>) -> Dossi
         return facts;
     }
 
-    if let Some(created) = user["createdAt"].as_str() {
-        if let Ok(dt) = created.parse::<DateTime<Utc>>() {
-            facts.account_age_days = Some((now - dt).num_days());
-        }
+    if let Some(created) = user["createdAt"].as_str()
+        && let Ok(dt) = created.parse::<DateTime<Utc>>()
+    {
+        facts.account_age_days = Some((now - dt).num_days());
     }
     facts.has_bio = user["bio"]
         .as_str()
         .map(|b| !b.trim().is_empty())
         .unwrap_or(false);
     facts.followers = user["followers"]["totalCount"].as_u64().unwrap_or(0);
-    facts.restricted_contributions = user["contributionsCollection"]
-        ["restrictedContributionsCount"]
-        .as_u64()
-        .unwrap_or(0);
+    facts.restricted_contributions =
+        user["contributionsCollection"]["restrictedContributionsCount"]
+            .as_u64()
+            .unwrap_or(0);
 
     let spam_names = ["spam", "invalid", "low quality", "low-quality", "slop"];
     if let Some(nodes) = user["pullRequests"]["nodes"].as_array() {
@@ -327,10 +328,9 @@ pub fn parse_dossier(login: &str, response: &Value, now: DateTime<Utc>) -> Dossi
             if let Some(t) = pr["createdAt"]
                 .as_str()
                 .and_then(|s| s.parse::<DateTime<Utc>>().ok())
+                && t >= now
             {
-                if t >= now {
-                    continue;
-                }
+                continue;
             }
             let merged = pr["merged"].as_bool().unwrap_or(false);
             let state = pr["state"].as_str().unwrap_or("");
@@ -478,9 +478,11 @@ mod tests {
         };
         let rules = facts.rules();
         // Abandonment fires at value 0.0 (all followed up); nothing else.
-        assert!(rules
-            .iter()
-            .all(|f| f.rule == "DOSSIER_ABANDONMENT" || f.rule == "DOSSIER_CLOSED_RATIO"));
+        assert!(
+            rules
+                .iter()
+                .all(|f| f.rule == "DOSSIER_ABANDONMENT" || f.rule == "DOSSIER_CLOSED_RATIO")
+        );
         assert!(rules.iter().all(|f| f.value == 0.0));
     }
 
@@ -508,10 +510,12 @@ mod tests {
             has_bio: true,
             ..Default::default()
         };
-        assert!(facts
-            .rules()
-            .iter()
-            .all(|f| f.rule != "DOSSIER_CONCURRENT_OPEN"));
+        assert!(
+            facts
+                .rules()
+                .iter()
+                .all(|f| f.rule != "DOSSIER_CONCURRENT_OPEN")
+        );
         facts.concurrent_open = 6;
         let v = facts
             .rules()
@@ -583,10 +587,12 @@ mod tests {
         assert!(v > 0.98);
         // Small diff: no velocity signal (forking to fix a typo fast is human).
         facts.additions = 3;
-        assert!(facts
-            .rules()
-            .iter()
-            .all(|f| f.rule != "VELOCITY_FORK_TO_PR"));
+        assert!(
+            facts
+                .rules()
+                .iter()
+                .all(|f| f.rule != "VELOCITY_FORK_TO_PR")
+        );
     }
 
     #[test]
@@ -622,10 +628,12 @@ mod tests {
                 .collect(),
             ..Default::default()
         };
-        assert!(varied
-            .rules()
-            .iter()
-            .all(|f| f.rule != "DOSSIER_TITLE_REPEAT"));
+        assert!(
+            varied
+                .rules()
+                .iter()
+                .all(|f| f.rule != "DOSSIER_TITLE_REPEAT")
+        );
     }
 
     #[test]

@@ -8,6 +8,7 @@ pub mod actions;
 pub mod challenge;
 pub mod cluster;
 pub mod codeslop;
+pub mod codestruct;
 pub mod config;
 pub mod diffsig;
 pub mod dossier;

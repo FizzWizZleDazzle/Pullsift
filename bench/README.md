@@ -91,6 +91,15 @@ client, an OpenAI integration): agent vocabulary everywhere, no provenance
 at all. A bot that convicts on "an AI wrote this" fails the first set; a
 bot that keys on AI words fails the second.
 
+`aipolicy-closed` and `aipolicy-merged` come from projects that published
+what they will not accept from a generator, found by searching
+contributing guides for the policy text. Both sides are drawn from the
+same repos and both must carry real code, so the slice measures the pull
+request rather than the venue. It exists because the label sweeps select
+for drive-by edits: across the rest of the corpus the median record adds
+one line of production source, which leaves nothing for a code rule to
+read.
+
 Labels are maintainer decisions, not ground truth annotations: a closed
 unmerged PR with a spam label is slop because the maintainer said so.
 

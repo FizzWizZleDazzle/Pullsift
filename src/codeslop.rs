@@ -34,7 +34,7 @@ fn added_code_lines(diff: &str) -> Vec<&str> {
         .collect()
 }
 
-fn is_comment(line: &str) -> bool {
+pub(crate) fn is_comment(line: &str) -> bool {
     line.starts_with("//")
         || line.starts_with('#')
         || line.starts_with("/*")

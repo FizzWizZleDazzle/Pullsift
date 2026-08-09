@@ -107,6 +107,7 @@ impl RepoConfig {
         "DETECTOR_SCORE",
         "COMMENT_HEAVY",
         "STYLE_AI_PHRASES",
+        "CODE_DOC_SCAFFOLD",
     ];
 
     /// Apply per-repo threshold overrides onto fitted thresholds.

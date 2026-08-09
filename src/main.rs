@@ -1,18 +1,18 @@
 //! The service: axum webhook intake, input assembly around the pure
 //! pipeline, action execution, and the nightly learner.
 
+use axum::Router;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
-use axum::Router;
 use chrono::Utc;
-use pullsift::actions::{action_name, PlannedAction, SUSPECT_LABEL};
+use pullsift::actions::{PlannedAction, SUSPECT_LABEL, action_name};
 use pullsift::challenge::{self, ChallengeState};
 use pullsift::cluster::ClusterStore;
 use pullsift::config::RepoConfig;
 use pullsift::dossier;
 use pullsift::engine::Weights;
-use pullsift::github::{app_jwt, Client};
+use pullsift::github::{Client, app_jwt};
 use pullsift::pipeline::{self, Outcome, ScoreInputs};
 use pullsift::store::{PgStore, Store};
 use pullsift::webhook::{self, Event};
@@ -232,7 +232,8 @@ async fn score_and_act(
 
     let diff = gh.pr_diff(&token, &ev.repo, ev.number).await?;
     let changed_paths = gh.pr_files(&token, &ev.repo, ev.number).await?;
-    let (commit_emails, commit_messages) = gh.pr_commits(&token, &ev.repo, ev.number).await?;
+    let (commit_emails, commit_messages, commit_times) =
+        gh.pr_commits(&token, &ev.repo, ev.number).await?;
 
     let dossier_facts = match state.store.get_dossier(&ev.author, now).await? {
         Some(f) => f,
@@ -255,6 +256,7 @@ async fn score_and_act(
         changed_paths,
         commit_emails,
         commit_messages,
+        commit_times,
         dossier: dossier_facts,
         pr_labels: ev.labels.clone(),
         template: template.as_deref(),

@@ -11,10 +11,10 @@ use chrono::{DateTime, TimeZone, Utc};
 use pullsift::actions::PlannedAction;
 use pullsift::cluster::ClusterStore;
 use pullsift::config::{Archetype, RepoConfig};
-use pullsift::dossier::{parse_dossier, DossierFacts};
+use pullsift::dossier::{DossierFacts, parse_dossier};
 use pullsift::engine::{Tier, Weights};
-use pullsift::fit::{auc, Example};
-use pullsift::pipeline::{process, Outcome, ScoreInputs};
+use pullsift::fit::{Example, auc};
+use pullsift::pipeline::{Outcome, ScoreInputs, process};
 use pullsift::webhook::PrEvent;
 
 fn fixture(path: &str) -> String {
@@ -98,6 +98,7 @@ fn score(
         changed_paths: changed_paths(diff),
         commit_emails: vec![],
         commit_messages: vec![],
+        commit_times: vec![],
         dossier,
         pr_labels: vec![],
         template: None,
@@ -265,6 +266,7 @@ fn linguist_author_flagged_solo_and_held_with_network() {
         changed_paths: vec!["lib/linguist/languages.yml".into()],
         commit_emails: vec![],
         commit_messages: vec![],
+        commit_times: vec![],
         dossier: facts.clone(),
         pr_labels: vec![],
         template: None,
@@ -293,6 +295,7 @@ fn linguist_author_flagged_solo_and_held_with_network() {
         changed_paths: vec!["lib/linguist/languages.yml".into()],
         commit_emails: vec![],
         commit_messages: vec![],
+        commit_times: vec![],
         dossier: facts,
         pr_labels: vec![],
         template: None,
@@ -380,6 +383,7 @@ fn legit_claude_integration_pr_is_not_flagged() {
             "test: mock server coverage for the proxy".into(),
             "docs: chat widget setup, examples generated with claude".into(),
         ],
+        commit_times: vec![],
         dossier: DossierFacts::default(),
         pr_labels: vec![],
         template: None,
@@ -470,6 +474,7 @@ fn linux_mirror_closes_every_pr_by_policy() {
             changed_paths: vec!["README".into()],
             commit_emails: vec![],
             commit_messages: vec![],
+            commit_times: vec![],
             dossier: DossierFacts::default(),
             pr_labels: vec![],
             template: None,

@@ -6,7 +6,7 @@ closed and unmerged, human author, author is not the repo owner, and the
 repo clears a star floor. Ham comes from the same repos so the model cannot
 learn repo identity. Re-runs skip PRs already collected.
 
-Usage: scripts/mine_corpus.py [--limit-total N]
+Usage: scripts/mine_corpus.py [--only-code | --only-policy]
 """
 
 import json
@@ -37,8 +37,18 @@ REPO_BLOCKLIST = (
 )
 STAR_FLOOR_LABELED = 100
 STAR_FLOOR_AGENT = 25
+# Added production code lines a record needs before the code-structure
+# rules will read it at all; kept in step with MIN_CODE_LINES in
+# src/codestruct.rs.
+MIN_CODE = 20
 BODY_CAP = 4096
-DIFF_CAP = 8192
+# Code-structure rules read the whole change: a method pasted three times
+# is only visible if the third copy is in the record. At 8KB the cap was
+# truncating a third of the corpus, and truncating code PRs specifically.
+# The cap now sits above what any rule reads, so it no longer decides what
+# is visible; `diff_bytes` records the true size either way, and additions
+# come from the API exactly, so size rules never read a truncated number.
+DIFF_CAP = 131072
 
 DOSSIER_GQL = """
 query($login: String!) {
@@ -64,7 +74,10 @@ query($login: String!) {
 
 
 def sh(args, check=True):
-    r = subprocess.run(args, capture_output=True, text=True)
+    # Diffs carry whatever bytes the contributor committed: latin-1 source,
+    # binary blobs, broken encodings. Decoding strictly turns one such file
+    # into a crash that ends the whole mining run.
+    r = subprocess.run(args, capture_output=True, text=True, errors="replace")
     if check and r.returncode != 0:
         raise RuntimeError(f"{' '.join(args)}: {r.stderr.strip()[:300]}")
     return r
@@ -75,7 +88,7 @@ def gh_json(args):
     return json.loads(out) if out.strip() else None
 
 
-def gh_api(path, accept=None, ok_statuses=()):
+def gh_api(path, accept=None, ok_statuses=(), tries=3):
     args = ["gh", "api", path]
     if accept:
         args += ["--header", f"Accept: {accept}"]
@@ -87,10 +100,59 @@ def gh_api(path, accept=None, ok_statuses=()):
         if "HTTP 403" in err or "rate limit" in err.lower():
             print("  rate limited; sleeping 90s", file=sys.stderr)
             time.sleep(90)
-            return gh_api(path, accept, ok_statuses)
+            return gh_api(path, accept, ok_statuses, tries)
+        # A dropped connection is not an answer about the pull request.
+        # Treating it as one silently shrinks whatever is being mined.
+        if "error connecting" in err and tries > 1:
+            time.sleep(5)
+            return gh_api(path, accept, ok_statuses, tries - 1)
         print(f"  skip {path}: {err[:160]}", file=sys.stderr)
         return None
     return r.stdout
+
+
+# Path classes the code-structure rules skip, kept in step with
+# src/codestruct.rs. Duplicated here on purpose: the miner must select the
+# pull requests those rules can actually read.
+_DOC_EXT = (".md", ".rst", ".txt", ".adoc", ".svg", ".css", ".scss", ".po")
+_DATA_EXT = (
+    ".json", ".yaml", ".yml", ".toml", ".xml", ".csv", ".ini", ".cfg",
+    ".lock", ".sql", ".snap", ".sum",
+)
+_NOT_AUTHORED = (
+    "vendor/", "node_modules/", "third_party/", "/dist/", "/build/",
+    ".min.js", ".pb.go", "_pb2.py", "generated", "migrations/",
+)
+_NOT_PRODUCTION = (
+    "test", "spec", "fixture", "mock", "__tests__", "/e2e/", "bench",
+    "example", "sample", "demo",
+)
+
+
+def _is_production(path):
+    p = path.lower()
+    if p.endswith(_DOC_EXT) or p.endswith(_DATA_EXT):
+        return False
+    if any(m in p for m in _NOT_AUTHORED):
+        return False
+    return not any(m in p for m in _NOT_PRODUCTION)
+
+
+def added_code_lines(diff):
+    """Added lines of production source: what the code rules get to read."""
+    count, path = 0, ""
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            path = line.rsplit(" b/", 1)[-1] if " b/" in line else ""
+        elif line.startswith(("+++ ", "---", "@@")):
+            continue
+        elif line.startswith("+"):
+            body = line[1:].strip()
+            if not body or body.startswith(("//", "#", "/*", "*", "--")):
+                continue
+            if not path or _is_production(path):
+                count += 1
+    return count
 
 
 def search_prs(extra_args, limit, retries=2):
@@ -108,6 +170,9 @@ def search_prs(extra_args, limit, retries=2):
             if "rate limit" in str(e).lower() and attempt < retries:
                 print("  search rate limited; sleeping 120s", file=sys.stderr)
                 time.sleep(120)
+                continue
+            if "error connecting" in str(e) and attempt < retries:
+                time.sleep(10)
                 continue
             print(f"  search failed ({e})", file=sys.stderr)
             return []
@@ -136,6 +201,7 @@ class Miner:
                         pass
         self.counts = {}
         self.repo_counts = {}
+        self.source_repos = {}
         # Seed repo counts from what previous runs already collected.
         p = OUT_DIR / "slop.jsonl"
         if p.exists():
@@ -192,16 +258,18 @@ class Miner:
                 self.dossier_cache[login] = entry
         return entry
 
-    def collect_all(self, hits, label, source, require_unmerged, star_floor):
+    def collect_all(self, hits, label, source, require_unmerged, star_floor, min_code=0):
         with ThreadPoolExecutor(max_workers=WORKERS) as pool:
             list(
                 pool.map(
-                    lambda h: self.collect(h, label, source, require_unmerged, star_floor),
+                    lambda h: self.collect(
+                        h, label, source, require_unmerged, star_floor, min_code
+                    ),
                     hits,
                 )
             )
 
-    def collect(self, hit, label, source, require_unmerged, star_floor):
+    def collect(self, hit, label, source, require_unmerged, star_floor, min_code=0):
         repo = hit["repository"]["nameWithOwner"]
         number = hit["number"]
         capped = source.startswith(("label:", "window:")) or source in (
@@ -254,6 +322,8 @@ class Miner:
         commits_raw = gh_api(f"repos/{repo}/pulls/{number}/commits?per_page=50")
         if diff is None or files_raw is None or commits_raw is None:
             return False
+        if min_code and added_code_lines(diff) < min_code:
+            return False
         dossier = self.dossier(author)
 
         record = {
@@ -284,11 +354,14 @@ class Miner:
                 {
                     "email": (c["commit"].get("author") or {}).get("email", ""),
                     "message": c["commit"].get("message", "")[:1000],
+                    # Author timestamps: how fast the change was written.
+                    "date": (c["commit"].get("author") or {}).get("date", ""),
                 }
                 for c in json.loads(commits_raw)
             ],
             "files": [f["filename"] for f in json.loads(files_raw)],
             "diff": diff[:DIFF_CAP],
+            "diff_bytes": len(diff),
             "repo_stars": self.stars(repo),
             "dossier": dossier["response"],
             "search_blocked": dossier["search_blocked"],
@@ -297,11 +370,132 @@ class Miner:
             self.files[label].write(json.dumps(record) + "\n")
             self.files[label].flush()
             self.counts[source] = self.counts.get(source, 0) + 1
+            self.source_repos.setdefault(source, set()).add(repo)
         return True
+
+
+# Projects that wrote down a position on generated contributions. Their
+# closed pull requests are a better label than a spam tag: the maintainers
+# have said what they will not take, and they enforce it.
+POLICY_QUERIES = (
+    '"not accept AI-generated" ',
+    '"no AI-generated code" ',
+    '"AI-generated code is not allowed" ',
+    '"AI-generated contributions" filename:CONTRIBUTING.md',
+    '"AI slop" filename:CONTRIBUTING.md',
+    '"LLM-generated" filename:CONTRIBUTING.md',
+    '"generated by an AI" filename:CONTRIBUTING.md',
+    '"AI policy" filename:CONTRIBUTING.md',
+)
+# A policy is only evidence if the project is real enough to enforce it.
+STAR_FLOOR_POLICY = 50
+POLICY_REPO_LIMIT = 120
+
+
+def code_search_repos(query, per_page=50):
+    """Repos whose files match a code-search query."""
+    import urllib.parse
+
+    url = f"search/code?per_page={per_page}&q=" + urllib.parse.quote(query)
+    raw = gh_api(url)
+    if raw is None:
+        return []
+    try:
+        items = json.loads(raw).get("items") or []
+    except json.JSONDecodeError:
+        return []
+    return [i["repository"]["full_name"] for i in items]
+
+
+def discover_policy_repos(m):
+    repos = []
+    for q in POLICY_QUERIES:
+        for repo in code_search_repos(q):
+            if repo not in repos:
+                repos.append(repo)
+        time.sleep(7)  # code search allows ten requests a minute
+    print(f"  {len(repos)} repos with a written policy", file=sys.stderr)
+    keep = [r for r in repos if m.stars(r) >= STAR_FLOOR_POLICY]
+    print(f"  {len(keep)} clear {STAR_FLOOR_POLICY} stars", file=sys.stderr)
+    return sorted(keep)[:POLICY_REPO_LIMIT]
+
+
+def mine_policy_repos(m):
+    """Both labels from projects that reject generated contributions.
+
+    Elsewhere the label is a spam tag, which selects for drive-by edits, or
+    a merge decision, which is silent about code that was merged after a
+    reviewer fixed it. Here the label is a rejection by a project that
+    published what it will not accept. Both sides come from the same repos
+    under the same code filter, so the slice measures the pull request
+    rather than the venue.
+    """
+    print("== repos with a written AI policy", file=sys.stderr)
+    repos = discover_policy_repos(m)
+    for repo in repos:
+        hits = search_prs(["--repo", repo, "--state", "closed"], 20)
+        time.sleep(2.5)
+        m.collect_all(hits, "slop", "aipolicy-closed", True, 0, MIN_CODE)
+        hits = search_prs(["--repo", repo, "--merged"], 20)
+        time.sleep(2.5)
+        m.collect_all(hits, "ham", "aipolicy-merged", False, 0, MIN_CODE)
+
+
+def mine_code_rejections(m):
+    """The slice the label sweeps miss: rejections aimed at the code.
+
+    These pull requests are planned, formatted and plausible, and what a
+    maintainer objects to is in the diff rather than the prose. The queries
+    are maintainers' own words for the defects the code-structure rules
+    measure, so the corpus can price those rules against the complaint that
+    produced the label. Both sides are filtered on carrying real code, so
+    that carrying real code is not itself evidence.
+    """
+    print("== slop: code-level rejections", file=sys.stderr)
+    for q in (
+        '"copy-pasted" in:comments',
+        '"copy pasted" in:comments',
+        '"duplicate of the existing" in:comments',
+        '"duplicates the existing" in:comments',
+        '"why is this hardcoded" in:comments',
+        '"hardcoded" in:comments',
+        '"magic number" in:comments',
+        '"reinvents" in:comments',
+        '"dead code" in:comments',
+        '"this function is never called" in:comments',
+        '"AI-generated code" in:comments',
+        '"vibe coded" in:comments',
+        '"did not review" in:comments',
+        '"does not do what the description" in:comments',
+    ):
+        hits = search_prs([q, "--state", "closed"], 40)
+        time.sleep(2.5)
+        # A lower star floor than the label sweeps use. Those sweeps need
+        # popularity as a proxy for the label meaning anything, because a
+        # tiny repo's "invalid" tag says little. Here the label is a
+        # maintainer writing out what is wrong with the code, which is
+        # evidence at any repo size, and the floor was dropping half the
+        # hits.
+        m.collect_all(hits, "slop", "accused-code", True, STAR_FLOOR_AGENT, MIN_CODE)
+
+    print("== ham: merged code PRs from the same repos", file=sys.stderr)
+    for repo in sorted(m.source_repos.get("accused-code", set())):
+        hits = search_prs(["--repo", repo, "--merged"], 8)
+        time.sleep(2.5)
+        m.collect_all(hits, "ham", "code-merged", False, 0, MIN_CODE)
 
 
 def main():
     m = Miner()
+    # Single-slice runs, for re-mining one source without a full sweep.
+    if "--only-code" in sys.argv:
+        mine_code_rejections(m)
+        print(f"counts: {m.counts}", file=sys.stderr)
+        return
+    if "--only-policy" in sys.argv:
+        mine_policy_repos(m)
+        print(f"counts: {m.counts}", file=sys.stderr)
+        return
 
     print("== slop: label-mined", file=sys.stderr)
     for lbl in ("spam", "invalid", "AI slop", "hacktoberfest-invalid", "ai-generated", "low quality"):
@@ -425,6 +619,9 @@ def main():
         hits = search_prs([q, "--state", "closed"], 40)
         time.sleep(2.5)
         m.collect_all(hits, "slop", "accused", True, STAR_FLOOR_LABELED)
+
+    mine_code_rejections(m)
+    mine_policy_repos(m)
 
     print("== slop: campaign artifacts with varied diffs", file=sys.stderr)
     hits = search_prs(
