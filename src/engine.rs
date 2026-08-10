@@ -81,7 +81,7 @@ impl Thresholds {
 
 /// The weight table: bias, per-rule weights, tier thresholds. Serialized as
 /// JSON and shipped as data, not code.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Weights {
     pub bias: f64,
     pub rules: BTreeMap<String, f64>,
@@ -152,6 +152,28 @@ impl Weights {
     pub fn default_table() -> Self {
         serde_json::from_str(include_str!("../weights/default.json"))
             .expect("embedded default weights must parse")
+    }
+
+    /// Fit timestamp from the provenance meta; None when the table
+    /// carries none.
+    pub fn fitted_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.meta
+            .as_ref()?
+            .get("fitted_at")?
+            .as_str()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| t.with_timezone(&chrono::Utc))
+    }
+
+    /// Whether this table is a strictly newer fit than `other`. A table
+    /// without provenance is never newer, and any fitted table is newer
+    /// than one without provenance.
+    pub fn newer_fit_than(&self, other: &Weights) -> bool {
+        match (self.fitted_at(), other.fitted_at()) {
+            (Some(a), Some(b)) => a > b,
+            (Some(_), None) => true,
+            (None, _) => false,
+        }
     }
 }
 
@@ -274,6 +296,24 @@ mod tests {
         assert!(t.thresholds.validate().is_ok());
         assert!(!t.rules.is_empty());
         assert!(t.bias < 0.0, "prior must favor pass");
+    }
+
+    #[test]
+    fn newer_fit_wins_and_missing_provenance_never_does() {
+        let stamped = |at: &str| Weights {
+            meta: Some(serde_json::json!({ "fitted_at": at })),
+            ..table()
+        };
+        let old = stamped("2026-08-06T21:24:28Z");
+        let new = stamped("2026-08-10T00:00:25Z");
+        assert!(new.newer_fit_than(&old));
+        assert!(!old.newer_fit_than(&new));
+        assert!(!old.newer_fit_than(&old));
+        let bare = table();
+        assert!(old.newer_fit_than(&bare));
+        assert!(!bare.newer_fit_than(&old));
+        assert!(!bare.newer_fit_than(&bare));
+        assert!(Weights::default_table().fitted_at().is_some());
     }
 
     #[test]
