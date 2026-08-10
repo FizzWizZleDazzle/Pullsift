@@ -47,18 +47,28 @@ async fn main() -> anyhow::Result<()> {
     let database_url = env("DATABASE_URL")?;
     let store = PgStore::connect(&database_url).await?;
 
+    // The active row in the database is the record; the embedded table
+    // self-promotes over it when it is a newer fit, so a deploy carrying
+    // retuned weights needs no manual promotion step.
+    let embedded = Weights::default_table();
     let weights = match store.active_weights().await? {
-        Some(w) => {
+        Some(active) if embedded.newer_fit_than(&active) => {
+            store
+                .promote_weights(&embedded, "newer embedded fit", f64::NAN)
+                .await?;
+            info!("promoted newer embedded weights over the active row");
+            embedded
+        }
+        Some(active) => {
             info!("loaded active weights from database");
-            w
+            active
         }
         None => {
-            let w = Weights::default_table();
             store
-                .promote_weights(&w, "bootstrap defaults", f64::NAN)
+                .promote_weights(&embedded, "bootstrap defaults", f64::NAN)
                 .await?;
             info!("promoted embedded default weights");
-            w
+            embedded
         }
     };
 
@@ -91,6 +101,30 @@ async fn main() -> anyhow::Result<()> {
                 tick.tick().await;
                 if let Err(e) = run_learner(&state).await {
                     error!("learner: {e:#}");
+                }
+            }
+        });
+    }
+
+    // Weight hot-reload: promotions land in the database (nightly
+    // learner, operator, another replica); running pods pick them up
+    // without a restart.
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                match state.store.active_weights().await {
+                    Ok(Some(w)) => {
+                        if w != *state.weights.read().await {
+                            info!("active weights changed; hot-reloading");
+                            *state.weights.write().await = w;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => warn!("weights reload: {e:#}"),
                 }
             }
         });

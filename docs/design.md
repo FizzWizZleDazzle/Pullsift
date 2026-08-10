@@ -224,6 +224,12 @@ in both splits, and held-out AUC within 0.005 of the incumbent. Promotion
 inserts a new row in `weights_versions` and flips `active`; rollback flips
 it back. Weights never mutate live.
 
+The active row is the record and reaches running pods without a restart:
+the service polls it once a minute and swaps in a changed table. On
+startup the embedded table self-promotes when its `fitted_at` is newer
+than the active row's, so a deploy carrying a retune needs no manual
+promotion; an older or equal embedded fit defers to the database.
+
 ## Federation (`federation.rs`, dormant)
 
 Two record kinds with different physics:
