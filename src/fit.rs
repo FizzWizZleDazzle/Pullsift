@@ -611,10 +611,7 @@ mod tests {
                 ..quick()
             },
         );
-        assert!(
-            w.rules["FLICKER"] >= 0.0,
-            "priced or zero, never negative"
-        );
+        assert!(w.rules["FLICKER"] >= 0.0, "priced or zero, never negative");
         // The stable rule survives full-stability gating.
         assert!(w.rules["AGENT_TRAILER"] > 1.0);
     }
