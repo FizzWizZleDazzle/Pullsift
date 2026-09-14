@@ -74,7 +74,16 @@ pub fn learn(examples: &[Example], incumbent: &Weights) -> LearnOutcome {
         return refuse("holdout split lost a class");
     }
 
-    let mut candidate = fit(&train, &FitOptions::default());
+    // Anchored to the incumbent: a nightly refit moves weights only as
+    // far as the new data can justify, and rules the feedback never
+    // exercised keep their current price.
+    let mut candidate = fit(
+        &train,
+        &FitOptions {
+            prior: Some(incumbent.clone()),
+            ..FitOptions::default()
+        },
+    );
     candidate.thresholds = thresholds_at_fpr(&candidate, &holdout, 0.05, 0.01, 0.001);
     if candidate.thresholds.validate().is_err() {
         return refuse("candidate thresholds failed validation");

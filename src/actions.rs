@@ -144,6 +144,7 @@ mod tests {
                 hold: 0.7,
                 close: 0.95,
             },
+            family_cap: None,
             meta: None,
         };
         match p_target {

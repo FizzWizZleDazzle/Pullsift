@@ -18,6 +18,16 @@ const AGENT_EMAILS: &[&str] = &[
     "devin-ai-integration[bot]@users.noreply.github.com",
     "cursoragent@cursor.com",
     "codex@openai.com",
+    "161369871+google-labs-jules[bot]@users.noreply.github.com",
+];
+
+/// Email substrings that identify an agent identity regardless of the
+/// numeric noreply prefix GitHub assigns.
+const AGENT_EMAIL_PARTS: &[&str] = &[
+    "devin-ai-integration",
+    "google-labs-jules",
+    "copilot-swe-agent",
+    "chatgpt-codex-connector",
 ];
 
 /// `Co-Authored-By` identities that identify an agent.
@@ -39,6 +49,9 @@ const GENERATION_FOOTERS: &[&str] = &[
     "created by an ai agent",
     "assisted-by:",
     "\u{1f916} generated with",
+    "pr created automatically by jules",
+    "thanks for asking me to work on this. i will get started on it",
+    "<!-- start copilot original prompt -->",
 ];
 
 /// One historical PR by the author, as far as the dossier cares.
@@ -63,6 +76,10 @@ pub struct PriorPr {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DossierFacts {
     pub login: String,
+    /// The repo the scored PR targets, as `owner/name`; prior PRs to it
+    /// are repo history rather than elsewhere-history.
+    #[serde(default)]
+    pub repo: String,
     pub account_age_days: Option<i64>,
     pub has_bio: bool,
     pub followers: u64,
@@ -100,7 +117,7 @@ pub fn scan_markers(
 ) -> (bool, bool, bool) {
     let email = commit_emails.iter().any(|e| {
         let e = e.to_lowercase();
-        AGENT_EMAILS.iter().any(|a| e == *a)
+        AGENT_EMAILS.iter().any(|a| e == *a) || AGENT_EMAIL_PARTS.iter().any(|p| e.contains(p))
     });
     let trailer = commit_messages.iter().any(|m| {
         m.to_lowercase().lines().any(|l| {
@@ -243,6 +260,56 @@ impl DossierFacts {
 
         if self.network_verdict > 0.0 {
             out.push(Fire::new("NETWORK_AUTHOR_VERDICT", self.network_verdict));
+        }
+
+        // Trust: what the account has answered for before. These are the
+        // only rules that fit negative. Without them the engine can only
+        // accumulate suspicion, and an established contributor's first
+        // wrong-shaped PR reads like a stranger's; with them, history the
+        // author cannot fake in a day carries the weight the fit gives it.
+        let merged_elsewhere = self
+            .prior
+            .iter()
+            .filter(|p| p.merged && !p.repo_key.eq_ignore_ascii_case(&self.repo))
+            .count();
+        if merged_elsewhere > 0 {
+            out.push(Fire::new(
+                "TRUST_MERGED_ELSEWHERE",
+                (1.0 + merged_elsewhere as f64).ln() / (21.0f64).ln(),
+            ));
+        }
+        let here = self
+            .prior
+            .iter()
+            .filter(|p| !self.repo.is_empty() && p.repo_key.eq_ignore_ascii_case(&self.repo))
+            .count();
+        if here > 0 {
+            out.push(Fire::new(
+                "TRUST_REPO_HISTORY",
+                (here as f64 / 3.0).min(1.0),
+            ));
+        }
+        if reviewed.len() >= 3 {
+            let followed = reviewed.iter().filter(|p| p.author_followed_up).count();
+            out.push(Fire::new(
+                "TRUST_FOLLOW_UP",
+                followed as f64 / reviewed.len() as f64,
+            ));
+        }
+        if let Some(age) = self.account_age_days
+            && age >= 365
+        {
+            // One year -> 0, five years and beyond -> 1.
+            out.push(Fire::new(
+                "TRUST_ACCOUNT_AGE",
+                ((age - 365) as f64 / (4.0 * 365.0)).min(1.0),
+            ));
+        }
+        if self.followers >= 3 {
+            out.push(Fire::new(
+                "TRUST_FOLLOWERS",
+                (1.0 + self.followers as f64).ln() / (101.0f64).ln(),
+            ));
         }
 
         if self.search_blocked {
@@ -477,13 +544,24 @@ mod tests {
             ..Default::default()
         };
         let rules = facts.rules();
-        // Abandonment fires at value 0.0 (all followed up); nothing else.
+        // Abandonment fires at value 0.0 (all followed up); every other
+        // rule that fires is trust.
+        assert!(rules.iter().all(|f| {
+            f.rule == "DOSSIER_ABANDONMENT"
+                || f.rule == "DOSSIER_CLOSED_RATIO"
+                || f.rule.starts_with("TRUST_")
+        }));
         assert!(
             rules
                 .iter()
-                .all(|f| f.rule == "DOSSIER_ABANDONMENT" || f.rule == "DOSSIER_CLOSED_RATIO")
+                .filter(|f| !f.rule.starts_with("TRUST_"))
+                .all(|f| f.value == 0.0)
         );
-        assert!(rules.iter().all(|f| f.value == 0.0));
+        assert!(
+            rules
+                .iter()
+                .any(|f| f.rule == "TRUST_FOLLOW_UP" && f.value == 1.0)
+        );
     }
 
     #[test]
@@ -499,8 +577,12 @@ mod tests {
             }],
             ..Default::default()
         };
-        // One reviewed PR is not a pattern.
-        assert!(facts.rules().is_empty());
+        // One reviewed PR is not a pattern; only the account's age speaks.
+        let rules = facts.rules();
+        assert!(
+            rules.iter().all(|f| f.rule == "TRUST_ACCOUNT_AGE"),
+            "{rules:?}"
+        );
     }
 
     #[test]
@@ -680,6 +762,64 @@ mod tests {
         let office: Vec<u32> = (0..40).map(|i| 9 + (i % 8)).collect();
         assert!(hour_entropy(&office).unwrap() < 0.7);
         assert!(hour_entropy(&[1, 2, 3]).is_none());
+    }
+
+    #[test]
+    fn trust_rules_fire_on_history_and_stay_silent_for_strangers() {
+        let stranger = DossierFacts {
+            account_age_days: Some(10),
+            followers: 0,
+            ..Default::default()
+        };
+        assert!(
+            stranger
+                .rules()
+                .iter()
+                .all(|f| !f.rule.starts_with("TRUST_")),
+            "no history, no trust"
+        );
+
+        let mut prior: Vec<PriorPr> = (0..8)
+            .map(|i| PriorPr {
+                merged: true,
+                received_review: true,
+                author_followed_up: true,
+                repo_key: format!("other/r{i}"),
+                ..Default::default()
+            })
+            .collect();
+        prior.push(PriorPr {
+            merged: false,
+            repo_key: "this/repo".into(),
+            ..Default::default()
+        });
+        let known = DossierFacts {
+            repo: "this/repo".into(),
+            account_age_days: Some(5 * 365 + 10),
+            followers: 100,
+            prior,
+            ..Default::default()
+        };
+        let rules = known.rules();
+        let get = |r: &str| rules.iter().find(|f| f.rule == r).map(|f| f.value);
+        let elsewhere = get("TRUST_MERGED_ELSEWHERE").expect("merged elsewhere");
+        assert!((elsewhere - (9.0f64).ln() / (21.0f64).ln()).abs() < 1e-9);
+        assert!((get("TRUST_REPO_HISTORY").unwrap() - 1.0 / 3.0).abs() < 1e-9);
+        assert_eq!(get("TRUST_FOLLOW_UP"), Some(1.0));
+        assert_eq!(get("TRUST_ACCOUNT_AGE"), Some(1.0));
+        assert!((get("TRUST_FOLLOWERS").unwrap() - 1.0).abs() < 1e-9);
+        // The same-repo prior PR does not count as merged elsewhere.
+        let mut same = known.clone();
+        same.prior = vec![PriorPr {
+            merged: true,
+            repo_key: "this/repo".into(),
+            ..Default::default()
+        }];
+        assert!(
+            same.rules()
+                .iter()
+                .all(|f| f.rule != "TRUST_MERGED_ELSEWHERE")
+        );
     }
 
     #[test]

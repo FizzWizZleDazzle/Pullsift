@@ -55,7 +55,9 @@ provenance marker escalates).
   author is a brand-new account.
 - Builds an author dossier from public history: abandonment after review,
   agent provenance markers in commits, reply latency, and accounts GitHub
-  itself has flagged.
+  itself has flagged. History counts in the author's favour too: merged
+  work elsewhere, prior PRs to the repo, and follow-up after review lower
+  the score.
 - Enforces in tiers: label, hold as draft, or close with the evidence and a
   one-reply appeal path. Repos that accept no PRs close everything with a
   policy message instead of a judgment.

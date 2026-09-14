@@ -5,6 +5,14 @@
 //!
 //! The whole model surfaces as a single engine rule (BODY_TOKEN_SCORE) whose
 //! weight the fit prices like any other.
+//!
+//! Training is repo-aware. A token that only ever appears in one repo's PRs
+//! (a project name, a maintainer's handle, a package identifier) separates
+//! the corpus perfectly and says nothing about the next repo, so a token
+//! must appear across several repos to be kept, and a token that leans
+//! slop must draw that evidence from more than one repo. Numeric tokens
+//! and very short ones are dropped outright: issue numbers, years and
+//! version fragments are corpus artifacts, not vocabulary.
 
 use crate::hashing::tokens;
 use serde::{Deserialize, Serialize};
@@ -17,6 +25,12 @@ const LLR_CLAMP: f64 = 3.0;
 const SUM_CLAMP: f64 = 12.0;
 /// A token must appear in this many documents overall to be kept.
 const MIN_DOCS: usize = 3;
+/// A token must appear in PRs from this many distinct repos to be kept.
+const MIN_REPOS: usize = 3;
+/// A slop-leaning token must draw its slop evidence from this many repos.
+const MIN_SLOP_REPOS: usize = 2;
+/// Tokens shorter than this are dropped.
+const MIN_TOKEN_LEN: usize = 3;
 /// Table size cap: the strongest tokens by |llr|.
 const MAX_TOKENS: usize = 400;
 /// Score only when at least this many known tokens are present.
@@ -37,21 +51,39 @@ impl TokenTable {
         self.llr.is_empty()
     }
 
-    /// Train from (text, is_slop) documents. Presence-based (a token counts
-    /// once per document), Laplace-smoothed, clamped.
-    pub fn train(docs: &[(String, bool)]) -> Self {
+    /// Whether a token is vocabulary rather than an identifier fragment.
+    fn keep_token(t: &str) -> bool {
+        t.chars().count() >= MIN_TOKEN_LEN && !t.chars().all(|c| c.is_ascii_digit())
+    }
+
+    /// Train from (text, is_slop, repo) documents. Presence-based (a token
+    /// counts once per document), Laplace-smoothed, clamped, and gated on
+    /// how many repos each token's evidence spans.
+    pub fn train(docs: &[(String, bool, String)]) -> Self {
         let mut slop_docs = 0usize;
         let mut ham_docs = 0usize;
         let mut slop_count: BTreeMap<String, usize> = BTreeMap::new();
         let mut ham_count: BTreeMap<String, usize> = BTreeMap::new();
-        for (text, is_slop) in docs {
-            let unique: BTreeSet<String> = tokens(text).into_iter().collect();
+        let mut repos: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
+        let mut slop_repos: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
+        for (text, is_slop, repo) in docs {
+            let unique: BTreeSet<String> = tokens(text)
+                .into_iter()
+                .filter(|t| Self::keep_token(t))
+                .collect();
             if *is_slop {
                 slop_docs += 1;
             } else {
                 ham_docs += 1;
             }
             for t in unique {
+                repos.entry(t.clone()).or_default().insert(repo.as_str());
+                if *is_slop {
+                    slop_repos
+                        .entry(t.clone())
+                        .or_default()
+                        .insert(repo.as_str());
+                }
                 let map = if *is_slop {
                     &mut slop_count
                 } else {
@@ -72,6 +104,14 @@ impl TokenTable {
             if s + h < MIN_DOCS {
                 continue;
             }
+            if repos.get(token).map_or(0, |r| r.len()) < MIN_REPOS {
+                continue;
+            }
+            let s_rate = s as f64 / slop_docs as f64;
+            let h_rate = h as f64 / ham_docs as f64;
+            if s_rate >= h_rate && slop_repos.get(token).map_or(0, |r| r.len()) < MIN_SLOP_REPOS {
+                continue;
+            }
             let p_s = (s as f64 + 1.0) / (slop_docs as f64 + 2.0);
             let p_h = (h as f64 + 1.0) / (ham_docs as f64 + 2.0);
             let llr = (p_s / p_h).ln().clamp(-LLR_CLAMP, LLR_CLAMP);
@@ -90,7 +130,10 @@ impl TokenTable {
         if self.llr.is_empty() {
             return None;
         }
-        let unique: BTreeSet<String> = tokens(text).into_iter().collect();
+        let unique: BTreeSet<String> = tokens(text)
+            .into_iter()
+            .filter(|t| Self::keep_token(t))
+            .collect();
         let mut sum = 0.0;
         let mut matches = 0usize;
         for t in &unique {
@@ -110,16 +153,19 @@ impl TokenTable {
 mod tests {
     use super::*;
 
-    fn corpus() -> Vec<(String, bool)> {
+    fn corpus() -> Vec<(String, bool, String)> {
         let mut docs = Vec::new();
         for i in 0..20 {
+            let repo = format!("o/r{}", i % 5);
             docs.push((
                 format!("this pr delivers seamless comprehensive robust enhancement number {i} kindly merge"),
                 true,
+                repo.clone(),
             ));
             docs.push((
                 format!("fix null check in parser regression test added case {i} covers the panic"),
                 false,
+                repo,
             ));
         }
         docs
@@ -143,8 +189,8 @@ mod tests {
 
     #[test]
     fn one_class_corpus_trains_empty() {
-        let docs: Vec<(String, bool)> = (0..10)
-            .map(|i| (format!("text {i} words here now"), true))
+        let docs: Vec<(String, bool, String)> = (0..10)
+            .map(|i| (format!("text {i} words here now"), true, "o/r".into()))
             .collect();
         assert!(TokenTable::train(&docs).is_empty());
     }
@@ -161,9 +207,28 @@ mod tests {
     #[test]
     fn rare_tokens_are_dropped() {
         let mut docs = corpus();
-        docs.push(("supercalifragilistic".into(), true));
+        docs.push(("supercalifragilistic".into(), true, "o/r0".into()));
         let t = TokenTable::train(&docs);
         assert!(!t.llr.contains_key("supercalifragilistic"));
+    }
+
+    #[test]
+    fn single_repo_tokens_and_numbers_are_dropped() {
+        let mut docs = corpus();
+        // A project name that only one repo's slop ever mentions.
+        for i in 0..6 {
+            docs.push((
+                format!("doubtdesk fixes four real bugs kindly merge {i}"),
+                true,
+                "o/doubtdesk".into(),
+            ));
+        }
+        let t = TokenTable::train(&docs);
+        assert!(!t.llr.contains_key("doubtdesk"), "one-repo token dropped");
+        assert!(t.llr.keys().all(|k| !k.chars().all(|c| c.is_ascii_digit())));
+        assert!(t.llr.keys().all(|k| k.chars().count() >= 3));
+        // Vocabulary that spans repos survives.
+        assert!(t.llr.contains_key("seamless"));
     }
 
     #[test]

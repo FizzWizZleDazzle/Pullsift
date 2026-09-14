@@ -13,15 +13,46 @@ the additive spam-filter design: explainable per verdict, and refittable
 without touching detection code. Rules unknown to the weight table score
 zero but are logged, so new rules ship dark and get priced later.
 
-Tier thresholds are probabilities chosen on held-out data at fixed
-false-positive targets: close at 0.1 percent, hold at 1 percent, label at 5
-percent. The threshold search only ever raises a tier to enforce ordering,
-because raising a threshold cannot raise its FPR.
+Rules belong to families named by prefix: cluster, code, prose, shape,
+dossier, trust, and policy (`engine::Family`). A family's total
+contribution is capped, at fit time and at score time, so no single lane
+can carry a verdict to the close tier alone; a close needs corroboration
+from at least two families. The cap lives in the weights file. Policy
+rules (challenge outcomes, corroborated network verdicts, the repo's AI
+stance) are decisive by design and are never capped.
 
-Fitting is plain logistic regression by gradient descent (`fit.rs`), with
-sample weights; maintainer corrections count five times. Negatives must be
-merged PRs from the same repos as the positives, otherwise the model learns
-"is a newcomer" instead of "is slop".
+Trust rules (`TRUST_*`) are the one family with negative weights. They
+exonerate: merged PRs elsewhere, prior PRs to this repo, follow-up after
+review, an account older than a year, followers. Every other rule fits
+non-negative. Without exonerating evidence the engine could only
+accumulate suspicion, so an established contributor's first wrong-shaped
+PR scored like a stranger's, and the history ratios the dossier already
+computed were forced to zero because their presence marked ham. Letting
+history speak was the single largest gain in cross-repo accuracy. Trust
+is capped like any other family, so a trusted account cannot launder an
+obvious campaign.
+
+Tier thresholds are probabilities chosen on out-of-fold predictions at
+fixed false-positive targets: close at 0.1 percent, hold at 1 percent,
+label at 5 percent. The threshold search only ever raises a tier to
+enforce ordering, because raising a threshold cannot raise its FPR. A
+target is certified by the rule of three: n negatives with no false
+positive bound the true rate below 3/n, so a tier is certifiable only when
+n is at least 3 divided by its target. A tier the negative count cannot
+certify sits one logit above the highest negative seen rather than on an
+empirical quantile that a single record would move; the weights file
+records which tiers are certified.
+
+Fitting (`fit.rs`) is logistic regression by gradient descent with sample
+weights; maintainer corrections count five times. It is anchored and
+bagged. Weights shrink toward the incumbent table rather than toward
+zero, so a refit moves a weight only as far as the data justifies, and
+rules that fired on too few examples keep their incumbent weight
+outright. The fit runs over bootstrap resamples of authors (an author's
+PRs are not independent draws) and ships the averaged weight; a rule that
+is non-zero in fewer than four resamples out of five is not priced at
+all. Negatives must be merged PRs from the same repos as the positives,
+otherwise the model learns "is a newcomer" instead of "is slop".
 
 ## Lane C: repo policy and PR shape (`policy.rs`, `config.rs`)
 
@@ -65,6 +96,15 @@ targets for the maintainer's explicit choice.
 - USERNAME_PATTERN: digit-heavy generated-looking logins.
 - AGENT_BRANCH: agent-workflow branch prefixes (`copilot/`, `codex/`,
   `cursor-`, and peers).
+- AGENT_ACCOUNT: the PR was opened by an agent product's own account
+  (`Copilot`, `devin-ai-integration[bot]`, `google-labs-jules[bot]`, and
+  peers). A human driving an agent pushes under their own login, so this
+  is the unattended-agent marker; the list drifts with vendors and is
+  re-verified with the email list.
+- BRANCH_GENERATED: a branch name ending in a long digit run or carrying
+  an epoch timestamp (`fix/project-88383`, `add-entry-1783575919907`),
+  the shape of a generated branch. Issue-number branches mostly stay
+  under the five-digit floor.
 - BODY_SCAFFOLD: the agent PR template (Summary/Changes/Testing
   headings, checkbox lists) in force.
 - COMMENT_HEAVY (in `diffsig.rs`): generated code over-comments; the
@@ -157,10 +197,13 @@ squashed to [0,1]. A cluster also carries the stylometry centroid of its
 members; high cohesion binds it tighter. Cluster membership re-enters the
 engine as rules (`CLUSTER_SIZE_LOG`, `CLUSTER_BURST`,
 `CLUSTER_STYLE_COHESION`, `CLUSTER_XREPO`), so there is one scoring path.
-Size, burst, and cohesion require at least two distinct authors in the
-cluster: one person's batch of similar PRs (a docs sweep) is normal work,
-and mined merged batches were the engine's main false-positive source.
-`CLUSTER_XREPO` still fires for a single account spraying repos.
+Size, burst, and cohesion require at least two distinct stranger authors
+in the cluster, where a stranger has no prior history with the repo. One
+person's batch of similar PRs (a docs sweep) is normal work, and several
+known contributors landing similar changes (a package bump series, a
+coordinated rename) is maintenance; mined merged series of both kinds
+were the lane's main false-positive source. `CLUSTER_XREPO` still fires
+for a single account spraying repos.
 
 ## Lane B: author dossier (`dossier.rs`, `stylometry.rs`)
 
@@ -182,10 +225,25 @@ The target property is "no human answers for this PR", measured:
   weight and is priced by the fit like everything else.
 
 Ratios stay silent below minimum sample sizes; a pattern needs data.
+The same dossier feeds the trust family: merged PRs in other repos,
+prior PRs to this repo, follow-up after review, account age past a year,
+and followers, each as a rule whose weight fits negative. A stranger has
+none of it and is scored on the PR alone; an established contributor
+carries a record the fit prices against everything else.
 Stylometry (em dashes, unicode punctuation, emoji, non-ASCII, an AI-phrase
 lexicon, markdown structure density) fires as per-PR rules at full weight
 and doubles as the cluster cohesion feature, where it compares PRs to each
-other rather than to a norm.
+other rather than to a norm. The lexicon is weak on its own and carries a
+documented dialect bias (several entries are over-represented in some
+varieties of English), which is why it is one squashed rule among many
+and never a gate.
+
+The learned token model (`tokenscore.rs`) is trained repo-aware: a token
+must appear in PRs from several repos to be kept, a slop-leaning token
+must draw its slop evidence from more than one repo, and numeric or very
+short tokens are dropped. Before that gate the table memorized project
+names, maintainer handles and issue numbers, which separated the corpus
+and said nothing about the next repo.
 
 ## Challenge (`challenge.rs`)
 
@@ -204,10 +262,16 @@ repo so one spam farm cannot dominate), the express README flood, agent
 marked PRs both merged and closed-unmerged, and merged PRs from the same
 repos as ham. The tuner replays the corpus through the production
 pipeline in real arrival order, cross-validates with author-grouped folds
-(an author never appears on both sides), fits, and writes the weight
-table with provenance metadata. Rules that never fired in the corpus keep
-their prior weight: no data means the prior stands. Exact metrics live in
-the tune output and the weights file, not here.
+(an author never appears on both sides) and again with repo-grouped folds
+(the number that predicts behaviour on an install the table has never
+seen), holds out each spam source in turn to report how much of a
+campaign shape the other sources teach, fits anchored to the incumbent,
+and writes the weight table with its model card: corpus size, both
+cross-validated AUCs, held-out recall by source, which tiers the negative
+count certifies, and every rule's fire counts per class beside its
+weight. Rules that never fired in the corpus keep their prior weight: no
+data means the prior stands. Exact metrics live in the tune output and
+the weights file, not here.
 
 The corpus doubles as a public benchmark (`bench/`): a fixed
 author-grouped test split, a prediction format, and a dependency-free
@@ -218,9 +282,10 @@ benchmark contract lives in `bench/README.md`.
 ## Learner (`learn.rs`, `store.rs`)
 
 Maintainer actions on scored PRs become labels; overrides of Pullsift
-actions are corrections at five-fold weight. A nightly batch job refits and
-promotes only behind guardrails: minimum corpus size, both classes present
-in both splits, and held-out AUC within 0.005 of the incumbent. Promotion
+actions are corrections at five-fold weight. A nightly batch job refits, anchored
+to the active table, and promotes only behind guardrails: minimum corpus
+size, both classes present in both splits, and held-out AUC within 0.005
+of the incumbent. Promotion
 inserts a new row in `weights_versions` and flips `active`; rollback flips
 it back. Weights never mutate live.
 

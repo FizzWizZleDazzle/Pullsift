@@ -224,6 +224,22 @@ pub fn shape_rules(pr: &PrMeta) -> Vec<Fire> {
         out.push(Fire::hit("AGENT_BRANCH"));
     }
 
+    // The PR was opened by an agent's own account: the strongest
+    // "unattended" marker, since a human driving an agent pushes under
+    // their own login. Vendors rename these; the list is re-verified with
+    // the email list.
+    if agent_account(pr.author) {
+        out.push(Fire::hit("AGENT_ACCOUNT"));
+    }
+
+    // Generated branch names: a long digit run, a random or timestamp
+    // suffix (`fix/project-88383`, `add-entry-1783575919907`). Issue-number
+    // branches stay below the five-digit floor in most repos; where they
+    // do not, the fit prices the rule down.
+    if branch_generated(&head) {
+        out.push(Fire::hit("BRANCH_GENERATED"));
+    }
+
     // The agent PR scaffold: Summary/Changes/Testing headings, checkbox
     // lists, "Test plan". Humans rarely produce all of it unprompted.
     let scaffold_hits = [
@@ -286,6 +302,48 @@ fn html_comment_fraction(body: &str) -> f64 {
     inside as f64 / total as f64
 }
 
+/// Logins of agent products that open PRs under their own account.
+const AGENT_ACCOUNTS: &[&str] = &[
+    "copilot",
+    "copilot-swe-agent[bot]",
+    "devin-ai-integration[bot]",
+    "google-labs-jules[bot]",
+    "chatgpt-codex-connector[bot]",
+    "cursor[bot]",
+    "amazon-q-developer[bot]",
+    "gemini-code-assist[bot]",
+    "sweep-ai[bot]",
+    "openhands-agent",
+];
+
+pub fn agent_account(login: &str) -> bool {
+    AGENT_ACCOUNTS.iter().any(|a| a.eq_ignore_ascii_case(login))
+}
+
+/// A trailing run of five or more digits after a separator, or ten or
+/// more digits anywhere (an epoch timestamp).
+pub fn branch_generated(head: &str) -> bool {
+    let longest = head
+        .split(|c: char| !c.is_ascii_digit())
+        .map(str::len)
+        .max()
+        .unwrap_or(0);
+    if longest >= 10 {
+        return true;
+    }
+    let trailing = head
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit())
+        .count();
+    trailing >= 5
+        && head
+            .chars()
+            .rev()
+            .nth(trailing)
+            .is_some_and(|c| matches!(c, '-' | '_' | '/' | '.'))
+}
+
 fn username_generated(login: &str) -> bool {
     let digits = login.bytes().filter(|b| b.is_ascii_digit()).count();
     if login.is_empty() {
@@ -316,6 +374,26 @@ fn template_ignored(template: &str, body: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_accounts_by_login() {
+        assert!(agent_account("Copilot"));
+        assert!(agent_account("devin-ai-integration[bot]"));
+        assert!(!agent_account("dependabot[bot]"));
+        assert!(!agent_account("someone"));
+    }
+
+    #[test]
+    fn generated_branch_shapes() {
+        assert!(branch_generated("fix/doubtdesk-88383"));
+        assert!(branch_generated("add-awesome-learn-1783575919907"));
+        assert!(branch_generated("codex/task_20260101123456"));
+        assert!(!branch_generated("patch-1"));
+        assert!(!branch_generated("fix/issue-1234"));
+        assert!(!branch_generated("feature/v2-migration"));
+        assert!(!branch_generated("main"));
+        assert!(!branch_generated("release-2026"));
+    }
 
     fn meta<'a>(paths: &'a [String], first_time: bool, body: &'a str) -> PrMeta<'a> {
         PrMeta {

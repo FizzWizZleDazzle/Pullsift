@@ -33,6 +33,20 @@ const AI_PHRASES: &[&str] = &[
     "as an ai",
     "happy to iterate",
     "let me know if",
+    // Excess-vocabulary words measured in generated academic prose
+    // (Kobak et al. 2024); the same lexicon shows up in generated PR
+    // bodies. Each is weak alone; the rule squashes their count.
+    "intricate",
+    "meticulous",
+    "showcas",
+    "commendable",
+    "invaluable",
+    "noteworthy",
+    "underscor",
+    "pivotal",
+    "testament to",
+    "tapestry",
+    "paramount",
 ];
 
 /// Unicode punctuation substituted by generators and word processors.

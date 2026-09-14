@@ -5,16 +5,24 @@
 //! Usage: tune [--dry] [corpus-dir]
 //!
 //! Folds are grouped by author (an author never appears in both train and
-//! eval). Rules that never fired in the corpus keep their incumbent weight:
-//! no data means the prior stands, so rare-but-designed signals (network
-//! verdicts, challenge outcomes) are not silently zeroed.
+//! eval); a second pass groups by repo, which is the number that predicts
+//! how the table behaves on an install it has never seen. The fit is
+//! anchored to the incumbent table: rules that never fired, or fired too
+//! rarely to price, keep their incumbent weight, so rare-but-designed
+//! signals (network verdicts, challenge outcomes) are not silently zeroed.
+//! Each spam source is also held out in turn, because a table that only
+//! recognizes the campaigns it was trained on is the failure this tool
+//! exists to catch.
 
 use chrono::{DateTime, Utc};
 use pullsift::cluster::ClusterStore;
 use pullsift::config::RepoConfig;
 use pullsift::dossier::{DossierFacts, parse_dossier, scan_markers};
 use pullsift::engine::{Fire, Weights};
-use pullsift::fit::{Example, FitOptions, auc, fit, observed_fpr, thresholds_at_fpr};
+use pullsift::fit::{
+    Example, FitOptions, auc, auc_of, certifiable, fire_counts, fit, observed_fpr,
+    thresholds_at_fpr, thresholds_from_negatives,
+};
 use pullsift::hashing::fnv1a64;
 use pullsift::pipeline::{Outcome, ScoreInputs, process};
 use pullsift::webhook::PrEvent;
@@ -71,6 +79,7 @@ struct Scored {
     fires: Vec<Fire>,
     is_slop: bool,
     author: String,
+    repo: String,
     source: String,
     id: String,
     /// Title + body, for training the token model per fold.
@@ -94,17 +103,113 @@ fn token_examples(scored: &[&Scored], table: &pullsift::tokenscore::TokenTable) 
             if let Some(p) = table.score(&s.prose) {
                 fires.push(Fire::new("BODY_TOKEN_SCORE", p));
             }
-            Example::new(fires, s.is_slop)
+            Example::new(fires, s.is_slop).in_group(&s.author)
         })
         .collect()
 }
 
+/// Training examples whose token-model fire is cross-fitted: the table
+/// that scores a record was trained on the other inner folds, never on
+/// the record itself. Pricing BODY_TOKEN_SCORE on in-sample token scores
+/// made the fit treat a weak signal as a strong one, because a table
+/// scores the documents it was built from far better than the next ones.
+fn crossfit_token_examples(scored: &[&Scored]) -> Vec<Example> {
+    let inner = |s: &Scored| fold_of(&format!("inner:{}", s.author));
+    let mut out: Vec<Option<Example>> = vec![None; scored.len()];
+    for k in 0..FOLDS {
+        let table_s: Vec<&Scored> = scored.iter().copied().filter(|s| inner(s) != k).collect();
+        let table = train_table(&table_s);
+        for (i, s) in scored.iter().enumerate() {
+            if inner(s) == k {
+                out[i] = token_examples(&[*s], &table).pop();
+            }
+        }
+    }
+    out.into_iter()
+        .map(|e| e.expect("every record scored"))
+        .collect()
+}
+
 fn train_table(scored: &[&Scored]) -> pullsift::tokenscore::TokenTable {
-    let docs: Vec<(String, bool)> = scored
+    let docs: Vec<(String, bool, String)> = scored
         .iter()
-        .map(|s| (s.prose.clone(), s.is_slop))
+        .map(|s| (s.prose.clone(), s.is_slop, s.repo.clone()))
         .collect();
     pullsift::tokenscore::TokenTable::train(&docs)
+}
+
+fn options(incumbent: &Weights) -> FitOptions {
+    FitOptions {
+        prior: Some(incumbent.clone()),
+        ..FitOptions::default()
+    }
+}
+
+/// One out-of-fold prediction: the example, its probability under the
+/// fold's candidate, and the record id.
+type OutOfFold = Vec<(Example, f64, String)>;
+
+/// Grouped cross-validation: fit on the other folds, score the held-out
+/// fold. Returns per-fold candidate and incumbent AUCs and the pooled
+/// out-of-fold predictions.
+fn cross_validate(
+    scored: &[Scored],
+    group: impl Fn(&Scored) -> u64,
+    incumbent: &Weights,
+) -> (Vec<f64>, Vec<f64>, OutOfFold) {
+    let mut cv_candidate = Vec::new();
+    let mut cv_incumbent = Vec::new();
+    let mut oof = Vec::new();
+    for fold in 0..FOLDS {
+        let train_s: Vec<&Scored> = scored.iter().filter(|s| group(s) != fold).collect();
+        let eval_s: Vec<&Scored> = scored.iter().filter(|s| group(s) == fold).collect();
+        // Token model trained on this fold's training records only; the
+        // training records themselves carry cross-fitted token scores.
+        let table = train_table(&train_s);
+        let train = crossfit_token_examples(&train_s);
+        let eval = token_examples(&eval_s, &table);
+        if eval.is_empty() || train.is_empty() {
+            continue;
+        }
+        let cand = fit(&train, &options(incumbent));
+        if eval.iter().any(|e| e.is_slop) && eval.iter().any(|e| !e.is_slop) {
+            cv_candidate.push(auc(&cand, &eval));
+            cv_incumbent.push(auc(incumbent, &eval));
+        } else {
+            println!("fold {fold}: single-class eval, AUC skipped");
+        }
+        for (e, s) in eval.into_iter().zip(&eval_s) {
+            let p = cand.score(&e.fires).probability;
+            oof.push((e, p, s.id.clone()));
+        }
+    }
+    (cv_candidate, cv_incumbent, oof)
+}
+
+/// Wilson 95 percent interval on a proportion: what a recall of k out of
+/// n is consistent with. Nine misses out of nine is not "zero recall", it
+/// is "below about a third".
+fn wilson(k: usize, n: usize) -> (f64, f64) {
+    if n == 0 {
+        return (0.0, 1.0);
+    }
+    let z = 1.96f64;
+    let (k, n) = (k as f64, n as f64);
+    let p = k / n;
+    let denom = 1.0 + z * z / n;
+    let centre = (p + z * z / (2.0 * n)) / denom;
+    let half = z * (p * (1.0 - p) / n + z * z / (4.0 * n * n)).sqrt() / denom;
+    ((centre - half).max(0.0), (centre + half).min(1.0))
+}
+
+fn recall_at_fpr(scored: &[(f64, bool)], target: f64) -> f64 {
+    let neg: Vec<f64> = scored.iter().filter(|s| !s.1).map(|s| s.0).collect();
+    let th = thresholds_from_negatives(neg, target, target, target);
+    let pos: Vec<f64> = scored.iter().filter(|s| s.1).map(|s| s.0).collect();
+    if pos.is_empty() {
+        return f64::NAN;
+    }
+    pos.iter().filter(|p| **p >= th.label).count() as f64 / pos.len() as f64
 }
 
 fn load(dir: &std::path::Path) -> Vec<Record> {
@@ -256,6 +361,7 @@ fn replay(
                     .collect(),
                 is_slop: r.label == "slop",
                 author: r.author.clone(),
+                repo: r.repo.clone(),
                 source: r.source.clone(),
                 id: format!("{}#{}", r.repo, r.number),
                 prose: format!("{}\n{}", r.title, r.body),
@@ -271,8 +377,8 @@ fn replay(
     (out, decided)
 }
 
-fn fold_of(author: &str) -> u64 {
-    fnv1a64(author.to_lowercase().as_bytes()) % FOLDS
+fn fold_of(key: &str) -> u64 {
+    fnv1a64(key.to_lowercase().as_bytes()) % FOLDS
 }
 
 fn main() {
@@ -374,111 +480,96 @@ fn main() {
         println!("wrote fires to {path}");
     }
 
-    // Cross-validation, author-grouped.
+    // Cross-validation, author-grouped: the benchmark's split. Then
+    // repo-grouped: the install-you-have-never-seen number.
     let incumbent = Weights::default_table();
-    let mut cv_candidate = Vec::new();
-    let mut cv_incumbent = Vec::new();
-    let mut oof: Vec<(Example, f64)> = Vec::new(); // out-of-fold: example + candidate prob
-    let mut oof_ids: Vec<String> = Vec::new(); // aligned with oof, for --emit
-    for fold in 0..FOLDS {
-        let train_s: Vec<&Scored> = scored
-            .iter()
-            .filter(|s| fold_of(&s.author) != fold)
-            .collect();
-        let eval_s: Vec<&Scored> = scored
-            .iter()
-            .filter(|s| fold_of(&s.author) == fold)
-            .collect();
-        // Token model trained on this fold's training authors only.
-        let table = train_table(&train_s);
-        let train = token_examples(&train_s, &table);
-        let eval = token_examples(&eval_s, &table);
-        if eval.is_empty() || train.is_empty() {
-            continue;
-        }
-        let cand = fit(&train, &FitOptions::default());
-        // AUC is undefined on a single-class fold, but the fold's records
-        // still get out-of-fold predictions so benchmark emission covers
-        // every record.
-        if eval.iter().any(|e| e.is_slop) && eval.iter().any(|e| !e.is_slop) {
-            cv_candidate.push(auc(&cand, &eval));
-            cv_incumbent.push(auc(&incumbent, &eval));
-        } else {
-            println!("fold {fold}: single-class eval, AUC skipped");
-        }
-        for (e, s) in eval.into_iter().zip(&eval_s) {
-            let p = cand.score(&e.fires).probability;
-            oof.push((e, p));
-            oof_ids.push(s.id.clone());
-        }
-    }
+    let (cv_candidate, cv_incumbent, oof) =
+        cross_validate(&scored, |s| fold_of(&s.author), &incumbent);
     let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
-    println!(
-        "cv AUC: candidate {:.4} (folds {:?}), incumbent {:.4}",
-        mean(&cv_candidate),
-        cv_candidate
-            .iter()
+    let round3 = |v: &[f64]| {
+        v.iter()
             .map(|a| (a * 1000.0).round() / 1000.0)
-            .collect::<Vec<_>>(),
+            .collect::<Vec<_>>()
+    };
+    let pooled: Vec<(f64, bool)> = oof.iter().map(|(e, p, _)| (*p, e.is_slop)).collect();
+    println!(
+        "cv AUC (author-grouped): candidate {:.4} (folds {:?}), incumbent {:.4}; pooled OOF AUC {:.4}, recall at 1% FPR {:.3}",
+        mean(&cv_candidate),
+        round3(&cv_candidate),
         mean(&cv_incumbent),
+        auc_of(&pooled),
+        recall_at_fpr(&pooled, 0.01),
+    );
+    let (cv_repo, _, oof_repo) = cross_validate(&scored, |s| fold_of(&s.repo), &incumbent);
+    let pooled_repo: Vec<(f64, bool)> = oof_repo.iter().map(|(e, p, _)| (*p, e.is_slop)).collect();
+    println!(
+        "cv AUC (repo-grouped):   candidate {:.4} (folds {:?}); pooled OOF AUC {:.4}, recall at 1% FPR {:.3}",
+        mean(&cv_repo),
+        round3(&cv_repo),
+        auc_of(&pooled_repo),
+        recall_at_fpr(&pooled_repo, 0.01),
     );
 
-    // Final token table and fit on everything; unfired rules keep incumbent
-    // weights.
+    // Leave-one-source-out: hold out every slop source with enough
+    // records, fit on the rest, and ask how much of it the table still
+    // catches at the 1% cut set on the training negatives. A source at
+    // zero is a campaign shape the other sources do not teach.
+    let mut sources: BTreeMap<&str, usize> = BTreeMap::new();
+    for s in scored.iter().filter(|s| s.is_slop) {
+        *sources.entry(s.source.as_str()).or_default() += 1;
+    }
+    println!("\nheld-out recall by source (1% FPR cut from training negatives):");
+    let mut loso: BTreeMap<String, f64> = BTreeMap::new();
+    for (src, n) in sources.iter().filter(|(_, n)| **n >= 15) {
+        let train_s: Vec<&Scored> = scored
+            .iter()
+            .filter(|s| !(s.is_slop && s.source == *src))
+            .collect();
+        let held_s: Vec<&Scored> = scored
+            .iter()
+            .filter(|s| s.is_slop && s.source == *src)
+            .collect();
+        let table = train_table(&train_s);
+        let train = crossfit_token_examples(&train_s);
+        let held = token_examples(&held_s, &table);
+        let w = fit(&train, &options(&incumbent));
+        let cut = thresholds_at_fpr(&w, &train, 0.01, 0.01, 0.01).label;
+        let caught = held
+            .iter()
+            .filter(|e| w.score(&e.fires).probability >= cut)
+            .count();
+        let r = caught as f64 / held.len() as f64;
+        let (lo, hi) = wilson(caught, held.len());
+        println!("  {src:28} {caught:3}/{n:<3} {r:.2}  [{lo:.2}, {hi:.2}]");
+        loso.insert(src.to_string(), r);
+    }
+
+    // Final token table and fit on everything; the prior anchors what the
+    // corpus cannot price.
     let all_refs: Vec<&Scored> = scored.iter().collect();
     let final_table = train_table(&all_refs);
-    println!("token table: {} tokens", final_table.llr.len());
-    let all = token_examples(&all_refs, &final_table);
-    let mut final_w = fit(&all, &FitOptions::default());
-    for (rule, w) in &incumbent.rules {
-        final_w.rules.entry(rule.clone()).or_insert(*w);
-    }
-    // Under-sampled rules keep at least their prior. Cluster rules: the
-    // corpus holds few genuine multi-account waves, whose members are also
-    // caught by token and title rules, so correlation starves the cluster
-    // weights; the corpus cannot yet price wave mechanics. The provenance
-    // markers (AGENT_*) lost their floors once the corpus gained merged
-    // agent PRs on the ham side: the fit prices them now, and a floor
-    // there forced false positives on accepted agent work.
-    for rule in [
-        "CLUSTER_BURST",
-        "CLUSTER_SIZE_LOG",
-        "CLUSTER_STYLE_COHESION",
-    ] {
-        if let (Some(prior), Some(fitted)) =
-            (incumbent.rules.get(rule), final_w.rules.get_mut(rule))
-            && *fitted < *prior
-        {
-            *fitted = *prior;
-        }
-    }
+    println!("\ntoken table: {} tokens", final_table.llr.len());
+    let all = crossfit_token_examples(&all_refs);
+    let mut final_w = fit(&all, &options(&incumbent));
 
     // Thresholds from pooled out-of-fold predictions: in-sample selection
     // was measurably optimistic (OOF FPR blew the targets), so the cuts
-    // come from probabilities the models did not train on.
+    // come from probabilities the models did not train on. A tier whose
+    // target the negative count cannot certify sits a full logit above
+    // the highest negative instead of on the empirical quantile.
     let in_sample = thresholds_at_fpr(&final_w, &all, 0.05, 0.01, 0.001);
-    let mut oof_neg: Vec<f64> = oof
+    let oof_neg: Vec<f64> = oof
         .iter()
-        .filter(|(e, _)| !e.is_slop)
-        .map(|(_, p)| *p)
+        .filter(|(e, _, _)| !e.is_slop)
+        .map(|(_, p, _)| *p)
         .collect();
-    oof_neg.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    let cut = |target: f64| -> f64 {
-        let n = oof_neg.len();
-        let allowed = (target * n as f64).floor() as usize;
-        if allowed == 0 || n == 0 {
-            oof_neg
-                .first()
-                .map(|m| (m + 1e-9).min(1.0))
-                .unwrap_or(0.999)
-        } else {
-            (oof_neg[allowed] + 1e-9).min(1.0)
-        }
-    };
-    let label = cut(0.05);
-    let hold = cut(0.01).max(label + 1e-9);
-    let close = cut(0.001).max(hold + 1e-9);
-    final_w.thresholds = pullsift::engine::Thresholds { label, hold, close };
+    let n_neg_oof = oof_neg.len();
+    final_w.thresholds = thresholds_from_negatives(oof_neg, 0.05, 0.01, 0.001);
+    let certified = (
+        certifiable(n_neg_oof, 0.05),
+        certifiable(n_neg_oof, 0.01),
+        certifiable(n_neg_oof, 0.001),
+    );
     println!(
         "in-sample thresholds would have been: label {:.4} hold {:.4} close {:.4}",
         in_sample.label, in_sample.hold, in_sample.close
@@ -487,15 +578,20 @@ fn main() {
     // Out-of-fold FPR at the final thresholds: the honesty check on
     // in-sample threshold selection.
     let oof_fpr = |t: f64| {
-        let neg: Vec<&(Example, f64)> = oof.iter().filter(|(e, _)| !e.is_slop).collect();
+        let neg: Vec<&(Example, f64, String)> = oof.iter().filter(|(e, _, _)| !e.is_slop).collect();
         if neg.is_empty() {
             return 0.0;
         }
-        neg.iter().filter(|(_, p)| *p >= t).count() as f64 / neg.len() as f64
+        neg.iter().filter(|(_, p, _)| *p >= t).count() as f64 / neg.len() as f64
     };
     println!(
-        "thresholds: label {:.4} hold {:.4} close {:.4}",
-        final_w.thresholds.label, final_w.thresholds.hold, final_w.thresholds.close
+        "thresholds: label {:.4} hold {:.4} close {:.4} (certified on {n_neg_oof} negatives: label {} hold {} close {})",
+        final_w.thresholds.label,
+        final_w.thresholds.hold,
+        final_w.thresholds.close,
+        certified.0,
+        certified.1,
+        certified.2,
     );
     println!(
         "in-sample FPR: label {:.4} hold {:.4} close {:.4}",
@@ -530,32 +626,20 @@ fn main() {
     // The empirical log-ratio of fire rates says which.
     let n_pos = all.iter().filter(|e| e.is_slop).count();
     let n_neg = all.len() - n_pos;
-    let mut cov: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
-    for e in &all {
-        for f in &e.fires {
-            if f.value <= 0.0 {
-                continue;
-            }
-            let c = cov.entry(f.rule.as_str()).or_default();
-            if e.is_slop {
-                c.0 += 1;
-            } else {
-                c.1 += 1;
-            }
-        }
-    }
+    let cov = fire_counts(&all);
     let mut rows: Vec<(&str, usize, usize, f64)> = cov
         .iter()
         .map(|(r, (p, n))| {
             let rate_p = (*p as f64 + 0.5) / (n_pos as f64 + 1.0);
             let rate_n = (*n as f64 + 0.5) / (n_neg as f64 + 1.0);
-            (*r, *p, *n, (rate_p / rate_n).ln())
+            (r.as_str(), *p, *n, (rate_p / rate_n).ln())
         })
         .collect();
     rows.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
     println!("\nrule coverage ({n_pos} slop, {n_neg} ham):");
     for (r, p, n, llr) in &rows {
-        println!("  {r:24} slop {p:4}  ham {n:5}  llr {llr:+.2}");
+        let w = final_w.rules.get(*r).copied().unwrap_or(0.0);
+        println!("  {r:24} slop {p:4}  ham {n:5}  llr {llr:+.2}  weight {w:+.3}");
     }
 
     // Ham false positives at each tier, for eyeballing. `all` is aligned
@@ -596,7 +680,8 @@ fn main() {
         }
     }
     for (src, (hit, total)) in &per {
-        println!("  {src:20} {hit}/{total}");
+        let (lo, hi) = wilson(*hit, *total);
+        println!("  {src:20} {hit}/{total}  [{lo:.2}, {hi:.2}]");
     }
 
     // Benchmark emission: one out-of-fold prediction per scored record
@@ -604,7 +689,7 @@ fn main() {
     // records the pipeline decided without scoring.
     if let Some(path) = &emit {
         let mut lines = String::new();
-        for ((_, p), id) in oof.iter().zip(&oof_ids) {
+        for (_, p, id) in &oof {
             lines.push_str(&format!(
                 "{}\n",
                 serde_json::json!({ "id": id, "score": p })
@@ -624,11 +709,27 @@ fn main() {
         println!("\n--dry: not writing weights");
         return;
     }
+    // The weights file doubles as the model card: what it was fitted on,
+    // how it scored out of fold under both groupings, which tiers the
+    // negative count certifies, and every rule's fire counts beside its
+    // weight.
+    let card: BTreeMap<&str, serde_json::Value> = cov
+        .iter()
+        .map(|(r, (p, n))| (r.as_str(), serde_json::json!({ "slop": p, "ham": n })))
+        .collect();
     final_w.meta = Some(serde_json::json!({
         "fitted_at": Utc::now().to_rfc3339(),
         "corpus": { "total": records.len(), "slop": n_slop },
         "cv_auc": mean(&cv_candidate),
+        "cv_auc_repo_grouped": mean(&cv_repo),
         "incumbent_cv_auc": mean(&cv_incumbent),
+        "oof_recall_at_1pct_fpr": recall_at_fpr(&pooled, 0.01),
+        "held_out_recall_by_source": loso,
+        "thresholds_certified": {
+            "label": certified.0, "hold": certified.1, "close": certified.2,
+            "negatives": n_neg_oof,
+        },
+        "fires": card,
     }));
     let path = format!("{}/weights/default.json", env!("CARGO_MANIFEST_DIR"));
     std::fs::write(&path, serde_json::to_string_pretty(&final_w).unwrap()).unwrap();
