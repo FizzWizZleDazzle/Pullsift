@@ -24,6 +24,10 @@ pub struct PrSignature {
     /// Author login, for counting distinct accounts in a cluster. Local
     /// only: federation envelopes carry signatures without identity.
     pub author: String,
+    /// The author had no visible history with the repo when the PR
+    /// arrived. Campaign rules count strangers only: a cluster of known
+    /// contributors sending similar changes is a maintenance series.
+    pub stranger: bool,
     pub arrived: DateTime<Utc>,
     pub diff_sim: Option<u64>,
     pub text_min: Option<MinHash>,
@@ -38,6 +42,8 @@ pub struct ClusterView {
     pub size: usize,
     pub distinct_repos: usize,
     pub distinct_authors: usize,
+    /// Distinct authors among members with no prior history in their repo.
+    pub distinct_strangers: usize,
     pub burst: f64,
     pub style_cohesion: f64,
 }
@@ -173,6 +179,14 @@ impl ClusterStore {
         authors.sort_unstable();
         authors.dedup();
         let distinct_authors = authors.len();
+        let mut strangers: Vec<&str> = member_ids
+            .iter()
+            .filter(|&&e| self.entries[e].stranger)
+            .map(|&e| self.entries[e].author.as_str())
+            .collect();
+        strangers.sort_unstable();
+        strangers.dedup();
+        let distinct_strangers = strangers.len();
 
         let in_window = member_ids
             .iter()
@@ -191,6 +205,7 @@ impl ClusterStore {
             size,
             distinct_repos,
             distinct_authors,
+            distinct_strangers,
             burst,
             style_cohesion,
         }
@@ -214,15 +229,17 @@ impl ClusterStore {
 
 /// Rules a cluster view contributes to its member PR's score.
 ///
-/// Size, burst, and cohesion require at least two distinct authors: a
-/// campaign is many accounts sending the same change, while one person's
-/// own batch of similar PRs (a docs sweep, a maintenance series) is
-/// normal work and belongs to the dossier lane if it is not. A single
-/// account spraying the same change across repos still counts through
-/// `CLUSTER_XREPO`.
+/// Size, burst, and cohesion require at least two distinct stranger
+/// authors: a campaign is many unknown accounts sending the same change.
+/// One person's own batch of similar PRs (a docs sweep) is normal work and
+/// belongs to the dossier lane if it is not, and several established
+/// contributors landing similar changes (a package bump series, a
+/// coordinated rename) is maintenance, which was the lane's main
+/// false-positive source on mined merged PRs. A single account spraying
+/// the same change across repos still counts through `CLUSTER_XREPO`.
 pub fn cluster_rules(view: &ClusterView) -> Vec<Fire> {
     let mut out = Vec::new();
-    if view.size >= 2 && view.distinct_authors >= 2 {
+    if view.size >= 2 && view.distinct_strangers >= 2 {
         let size_val = ((view.size as f64).ln() / (50.0f64).ln()).min(1.0);
         out.push(Fire::new("CLUSTER_SIZE_LOG", size_val));
         out.push(Fire::new("CLUSTER_BURST", view.burst));
@@ -328,12 +345,37 @@ mod tests {
             repo: repo.into(),
             pr_number: n,
             author: author.into(),
+            stranger: true,
             arrived: t(minute),
             diff_sim: diffsig::simhash(patch),
             text_min: minhash(body),
             pathset: diffsig::pathset_hash(&["README.md".into()]),
             style: analyze(body),
         }
+    }
+
+    #[test]
+    fn known_contributors_do_not_form_a_campaign() {
+        let mut store = ClusterStore::new(0.5);
+        let mut view = None;
+        for n in 1..=6 {
+            let mut s = sig("o/r", n, n as i64, &readme_patch("very"), WAVE_BODY);
+            s.stranger = false;
+            view = Some(store.insert(s));
+        }
+        let v = view.unwrap();
+        assert!(v.size >= 6 && v.distinct_authors >= 6);
+        assert_eq!(v.distinct_strangers, 0);
+        assert!(
+            cluster_rules(&v).is_empty(),
+            "a maintenance series of known contributors fires nothing"
+        );
+        // One more stranger joining does not make it a campaign either.
+        let mut s = sig("o/r", 7, 7, &readme_patch("very"), WAVE_BODY);
+        s.stranger = true;
+        let v = store.insert(s);
+        assert_eq!(v.distinct_strangers, 1);
+        assert!(cluster_rules(&v).is_empty());
     }
 
     const WAVE_BODY: &str = "This PR improves the README documentation and \

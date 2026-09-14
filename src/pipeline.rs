@@ -108,6 +108,7 @@ pub fn process(
         repo: ev.repo.clone(),
         pr_number: ev.number,
         author: ev.author.clone(),
+        stranger: meta.is_first_time_contributor,
         arrived: now,
         diff_sim: diffsig::simhash(inputs.diff),
         text_min: textsig::minhash(&prose),
@@ -125,6 +126,7 @@ pub fn process(
     dossier.agent_trailer |= trailer;
     dossier.generation_footer |= footer;
     dossier.additions = ev.additions;
+    dossier.repo = ev.repo.clone();
     fires.extend(dossier.rules());
     fires.extend(style.rules());
 

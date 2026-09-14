@@ -8,9 +8,106 @@
 //!
 //! Rules unknown to the weight table score zero but are still logged, so new
 //! rules can ship dark and get priced at the next fit.
+//!
+//! Rules belong to families (cluster, code, prose, shape, dossier, trust,
+//! policy) named by prefix. A family's total contribution is capped, so no
+//! single lane can carry a verdict to the close tier alone: a close needs
+//! corroboration from at least two families. Policy rules (challenge
+//! outcomes, network verdicts, the repo's AI stance) are decisive by
+//! design and are never capped. `TRUST_` rules are the one family whose
+//! weights are negative: they exonerate, and they are capped the same way
+//! so a trusted account cannot launder an obvious campaign.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+/// The lane a rule belongs to, by name prefix. Families are the unit of
+/// the contribution cap in `Weights::score` and of the sign constraint in
+/// the fit: `Trust` rules fit non-positive, every other family fits
+/// non-negative.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Family {
+    Cluster,
+    Code,
+    Prose,
+    Shape,
+    Dossier,
+    Trust,
+    /// Decisive by design: challenge outcomes, corroborated network
+    /// verdicts, and the repo's own AI policy. Never capped.
+    Policy,
+}
+
+impl Family {
+    pub fn of(rule: &str) -> Family {
+        const POLICY: &[&str] = &[
+            "NETWORK_AUTHOR_VERDICT",
+            "CANARY_EATEN",
+            "CHALLENGE_TIMEOUT",
+            "AI_FORBIDDEN",
+            "UNDISCLOSED_AI",
+        ];
+        const CODE: &[&str] = &[
+            "COMMENT_HEAVY",
+            "DIFF_ENORMOUS",
+            "WHITESPACE_ONLY",
+            "AUTHORING_RATE",
+        ];
+        const PROSE: &[&str] = &["BODY_TOKEN_SCORE", "DETECTOR_SCORE"];
+        if POLICY.contains(&rule) {
+            Family::Policy
+        } else if rule.starts_with("TRUST_") {
+            Family::Trust
+        } else if rule.starts_with("CLUSTER_") {
+            Family::Cluster
+        } else if rule.starts_with("CODE_") || CODE.contains(&rule) {
+            Family::Code
+        } else if rule.starts_with("STYLE_") || PROSE.contains(&rule) {
+            Family::Prose
+        } else if rule.starts_with("DOSSIER_")
+            || rule.starts_with("ACCOUNT_")
+            || rule.starts_with("AGENT_")
+            || matches!(
+                rule,
+                "GENERATION_FOOTER"
+                    | "VELOCITY_FORK_TO_PR"
+                    | "REPLY_INSTANT"
+                    | "HOUR_ENTROPY_FLAT"
+                    | "UNRELATED_SPREAD"
+            )
+        {
+            Family::Dossier
+        } else {
+            Family::Shape
+        }
+    }
+
+    /// Number of families, for fixed-size accumulators.
+    pub const COUNT: usize = 7;
+
+    /// Dense index, for fixed-size accumulators.
+    pub fn index(self) -> usize {
+        match self {
+            Family::Cluster => 0,
+            Family::Code => 1,
+            Family::Prose => 2,
+            Family::Shape => 3,
+            Family::Dossier => 4,
+            Family::Trust => 5,
+            Family::Policy => 6,
+        }
+    }
+
+    /// Whether the family's weights are exonerating (fit non-positive).
+    pub fn exonerating(self) -> bool {
+        self == Family::Trust
+    }
+
+    /// Whether the family's contribution is subject to the cap.
+    pub fn capped(self) -> bool {
+        self != Family::Policy
+    }
+}
 
 /// A rule that fired for a PR, with its value in [0,1].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -86,6 +183,11 @@ pub struct Weights {
     pub bias: f64,
     pub rules: BTreeMap<String, f64>,
     pub thresholds: Thresholds,
+    /// Largest absolute contribution one rule family may make to a score.
+    /// None leaves families uncapped (tables fitted before the cap
+    /// existed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family_cap: Option<f64>,
     /// Provenance: corpus size, AUC, fit date. Informational only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meta: Option<serde_json::Value>,
@@ -115,22 +217,43 @@ pub fn sigmoid(x: f64) -> f64 {
     1.0 / (1.0 + (-x).exp())
 }
 
+pub fn logit(p: f64) -> f64 {
+    let p = p.clamp(1e-12, 1.0 - 1e-12);
+    (p / (1.0 - p)).ln()
+}
+
 impl Weights {
     pub fn score(&self, fires: &[Fire]) -> Verdict {
-        let mut score = self.bias;
-        let mut evidence = Vec::with_capacity(fires.len());
-        for f in fires {
-            let value = f.value.clamp(0.0, 1.0);
-            let weight = self.rules.get(&f.rule).copied().unwrap_or(0.0);
-            let contribution = weight * value;
-            score += contribution;
-            evidence.push(EvidenceItem {
-                rule: f.rule.clone(),
-                value,
-                weight,
-                contribution,
-            });
+        let mut evidence: Vec<EvidenceItem> = fires
+            .iter()
+            .map(|f| {
+                let value = f.value.clamp(0.0, 1.0);
+                let weight = self.rules.get(&f.rule).copied().unwrap_or(0.0);
+                EvidenceItem {
+                    rule: f.rule.clone(),
+                    value,
+                    weight,
+                    contribution: weight * value,
+                }
+            })
+            .collect();
+        // Family cap: scale a family's contributions down proportionally
+        // when their sum exceeds the cap, so the evidence table still sums
+        // to the score.
+        if let Some(cap) = self.family_cap {
+            let mut sums: BTreeMap<Family, f64> = BTreeMap::new();
+            for e in &evidence {
+                *sums.entry(Family::of(&e.rule)).or_default() += e.contribution;
+            }
+            for e in &mut evidence {
+                let fam = Family::of(&e.rule);
+                let sum = sums[&fam];
+                if fam.capped() && sum.abs() > cap {
+                    e.contribution *= cap / sum.abs();
+                }
+            }
         }
+        let score = self.bias + evidence.iter().map(|e| e.contribution).sum::<f64>();
         // Largest contributions first: the evidence list reads as "why".
         evidence.sort_by(|a, b| {
             b.contribution
@@ -194,6 +317,7 @@ mod tests {
                 hold: 0.70,
                 close: 0.95,
             },
+            family_cap: None,
             meta: None,
         }
     }
@@ -281,6 +405,59 @@ mod tests {
         assert_eq!(v.evidence[0].rule, "CLUSTER_BURST");
         assert_eq!(v.evidence[1].rule, "AGENT_TRAILER");
         assert_eq!(v.evidence[2].rule, "ACCOUNT_NEW");
+    }
+
+    #[test]
+    fn family_cap_bounds_one_lane_and_spares_policy() {
+        let mut t = table();
+        t.rules.insert("CLUSTER_SIZE_LOG".into(), 3.0);
+        t.rules.insert("CANARY_EATEN".into(), 8.0);
+        t.rules.insert("TRUST_MERGED_ELSEWHERE".into(), -6.0);
+        t.family_cap = Some(4.0);
+        // Two cluster rules sum to 7 but the family contributes 4.
+        let v = t.score(&[Fire::hit("CLUSTER_BURST"), Fire::hit("CLUSTER_SIZE_LOG")]);
+        assert!(
+            (v.score - (-4.0 + 4.0)).abs() < 1e-9,
+            "capped score {}",
+            v.score
+        );
+        let shown: f64 = v.evidence.iter().map(|e| e.contribution).sum();
+        assert!(
+            (shown - 4.0).abs() < 1e-9,
+            "evidence sums to the capped score"
+        );
+        // Policy rules are never capped.
+        let v = t.score(&[Fire::hit("CANARY_EATEN")]);
+        assert!((v.score - 4.0).abs() < 1e-9);
+        // Trust is capped symmetrically.
+        let v = t.score(&[Fire::hit("TRUST_MERGED_ELSEWHERE")]);
+        assert!(
+            (v.score - (-8.0)).abs() < 1e-9,
+            "trust capped at -4: {}",
+            v.score
+        );
+        // Without a cap, nothing changes.
+        t.family_cap = None;
+        let v = t.score(&[Fire::hit("CLUSTER_BURST"), Fire::hit("CLUSTER_SIZE_LOG")]);
+        assert!((v.score - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn families_by_prefix() {
+        assert_eq!(Family::of("CLUSTER_BURST"), Family::Cluster);
+        assert_eq!(Family::of("CODE_DUP_BLOCK"), Family::Code);
+        assert_eq!(Family::of("DIFF_ENORMOUS"), Family::Code);
+        assert_eq!(Family::of("STYLE_EMOJI"), Family::Prose);
+        assert_eq!(Family::of("BODY_TOKEN_SCORE"), Family::Prose);
+        assert_eq!(Family::of("BODY_SCAFFOLD"), Family::Shape);
+        assert_eq!(Family::of("TITLE_UPDATE_FILE"), Family::Shape);
+        assert_eq!(Family::of("ACCOUNT_NEW"), Family::Dossier);
+        assert_eq!(Family::of("AGENT_EMAIL"), Family::Dossier);
+        assert_eq!(Family::of("TRUST_ACCOUNT_AGE"), Family::Trust);
+        assert!(Family::of("TRUST_ACCOUNT_AGE").exonerating());
+        assert_eq!(Family::of("CANARY_EATEN"), Family::Policy);
+        assert!(!Family::of("CANARY_EATEN").capped());
+        assert_eq!(Family::of("SOME_FUTURE_RULE"), Family::Shape);
     }
 
     #[test]

@@ -107,6 +107,7 @@ impl RepoConfig {
         "AGENT_TRAILER",
         "GENERATION_FOOTER",
         "AGENT_BRANCH",
+        "AGENT_ACCOUNT",
         "BODY_SCAFFOLD",
         "DETECTOR_SCORE",
         "COMMENT_HEAVY",

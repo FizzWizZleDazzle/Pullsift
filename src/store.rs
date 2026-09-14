@@ -180,17 +180,20 @@ impl Store for MemStore {
         let mut out = Vec::new();
         for (id, is_slop, correction) in &inner.feedback {
             let ix = (*id - 1) as usize;
-            if let Some((_, _, _, v)) = inner.verdicts.get(ix) {
+            if let Some((_, _, author, v)) = inner.verdicts.get(ix) {
                 let fires = v
                     .evidence
                     .iter()
                     .map(|e| crate::engine::Fire::new(&e.rule, e.value))
                     .collect();
-                out.push(if *correction {
-                    Example::correction(fires, *is_slop)
-                } else {
-                    Example::new(fires, *is_slop)
-                });
+                out.push(
+                    if *correction {
+                        Example::correction(fires, *is_slop)
+                    } else {
+                        Example::new(fires, *is_slop)
+                    }
+                    .in_group(author),
+                );
             }
         }
         Ok(out)
@@ -363,7 +366,7 @@ impl Store for PgStore {
 
     async fn load_examples(&self) -> Result<Vec<Example>> {
         let rows = sqlx::query(
-            "SELECT v.evidence, f.is_slop, f.correction \
+            "SELECT v.evidence, v.author, f.is_slop, f.correction \
              FROM feedback f JOIN verdicts v ON v.id = f.verdict_id \
              ORDER BY f.id",
         )
@@ -378,11 +381,15 @@ impl Store for PgStore {
                 .map(|e| crate::engine::Fire::new(&e.rule, e.value))
                 .collect();
             let is_slop: bool = r.get("is_slop");
-            out.push(if r.get::<bool, _>("correction") {
-                Example::correction(fires, is_slop)
-            } else {
-                Example::new(fires, is_slop)
-            });
+            let author: String = r.get("author");
+            out.push(
+                if r.get::<bool, _>("correction") {
+                    Example::correction(fires, is_slop)
+                } else {
+                    Example::new(fires, is_slop)
+                }
+                .in_group(&author),
+            );
         }
         Ok(out)
     }
