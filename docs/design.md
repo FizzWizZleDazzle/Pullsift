@@ -64,6 +64,10 @@ checks inject rules instead of closing. Per-repo config comes from
 
 Every scored PR gets one comment with its probability and evidence table,
 passing PRs included; `score_comments: false` restores silence on passes.
+The table lists the rules that carry weight; rules that fired unpriced
+(shipped dark, or not stable enough across resamples to earn a weight)
+are named on one line beneath it, so the record stays complete without
+rows of zeros.
 The comment carries a hidden marker and rescores edit it in place, so a PR
 accumulates pushes, not comments. The comment is the install's heartbeat:
 without it, a healthy repo in dry run produces no visible output at all
