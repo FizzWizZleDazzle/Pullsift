@@ -84,18 +84,35 @@ pub fn action_name(a: &PlannedAction) -> &'static str {
     }
 }
 
-/// Collapsed evidence table: rule, value, weight, contribution.
+/// Collapsed evidence table: rule, value, weight, contribution, for the
+/// rules that carry weight. Rules that fired but are unpriced (shipped
+/// dark, or not stable enough across resamples to earn a weight) are
+/// named on one line below the table: they are part of the record and
+/// get priced at a later fit, but a row of zeros is not evidence.
 pub fn evidence_comment(verdict: &Verdict) -> String {
     let mut s = String::new();
     s.push_str(&format!(
         "<details><summary>Pullsift evidence (probability {:.3})</summary>\n\n",
         verdict.probability
     ));
-    s.push_str("| rule | value | weight | contribution |\n|---|---|---|---|\n");
-    for e in &verdict.evidence {
+    let (priced, unpriced): (Vec<&EvidenceItem>, Vec<&EvidenceItem>) =
+        verdict.evidence.iter().partition(|e| e.weight != 0.0);
+    if priced.is_empty() {
+        s.push_str("No weighted rule fired.\n");
+    } else {
+        s.push_str("| rule | value | weight | contribution |\n|---|---|---|---|\n");
+        for e in priced {
+            s.push_str(&format!(
+                "| {} | {:.2} | {:+.2} | {:+.2} |\n",
+                e.rule, e.value, e.weight, e.contribution
+            ));
+        }
+    }
+    if !unpriced.is_empty() {
+        let names: Vec<&str> = unpriced.iter().map(|e| e.rule.as_str()).collect();
         s.push_str(&format!(
-            "| {} | {:.2} | {:+.2} | {:+.2} |\n",
-            e.rule, e.value, e.weight, e.contribution
+            "\nObserved, not yet weighted: {}\n",
+            names.join(", ")
         ));
     }
     s.push_str("\n</details>\n");
@@ -133,6 +150,35 @@ in your own words about what the change does is enough.\n\n\
 mod tests {
     use super::*;
     use crate::engine::{Fire, Thresholds, Weights};
+
+    #[test]
+    fn unpriced_rules_leave_the_table() {
+        let w = Weights {
+            bias: -3.0,
+            rules: BTreeMap::from([("AGENT_EMAIL".into(), 2.0), ("DARK".into(), 0.0)]),
+            thresholds: Thresholds {
+                label: 0.3,
+                hold: 0.7,
+                close: 0.95,
+            },
+            family_cap: None,
+            meta: None,
+        };
+        let v = w.score(&[
+            Fire::hit("AGENT_EMAIL"),
+            Fire::hit("DARK"),
+            Fire::hit("UNKNOWN"),
+        ]);
+        let c = evidence_comment(&v);
+        assert!(c.contains("| AGENT_EMAIL | 1.00 | +2.00 | +2.00 |"));
+        assert!(!c.contains("| DARK |"), "{c}");
+        assert!(
+            c.contains("Observed, not yet weighted: DARK, UNKNOWN"),
+            "{c}"
+        );
+        let none = w.score(&[Fire::hit("DARK")]);
+        assert!(evidence_comment(&none).contains("No weighted rule fired."));
+    }
     use std::collections::BTreeMap;
 
     fn verdict(p_target: Tier) -> Verdict {
